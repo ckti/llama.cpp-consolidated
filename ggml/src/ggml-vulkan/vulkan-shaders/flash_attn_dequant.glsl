@@ -27,6 +27,8 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1 { block_q5_1_packed16 data[];
 layout (binding = 2) readonly buffer V_PACKED_Q5_1 { block_q5_1_packed16 data[]; } v_packed_q5_1;
 layout (binding = 1) readonly buffer K_PACKED_Q8_0 { block_q8_0_packed16 data[]; } k_packed_q8_0;
 layout (binding = 2) readonly buffer V_PACKED_Q8_0 { block_q8_0_packed16 data[]; } v_packed_q8_0;
+layout (binding = 1) readonly buffer K_PACKED_TURBO3_0 { block_turbo3_0 data[]; } k_packed_turbo3_0;
+layout (binding = 2) readonly buffer V_PACKED_TURBO3_0 { block_turbo3_0 data[]; } v_packed_turbo3_0;
 
 // Q4_1 and Q5_1 packed32 views: aliased to the same memory as the packed16
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
@@ -99,6 +101,25 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
     return FLOAT_TYPE(BUF.data[a_offset + ib].d) * FLOAT_TYPEV4(v0.x, v0.y, v1.x, v1.y);          \
 }
 
+const float T3C[8] = float[8](
+    -0.190685, -0.117832, -0.065717, -0.021460,
+     0.021460,  0.065717,  0.117832,  0.190685
+);
+
+#define FA_DEQUANT4_TURBO3_0(BUF) {                                                               \
+    FLOAT_TYPEV4 r;                                                                               \
+    for (int k = 0; k < 4; k++) {                                                                 \
+        uint j = iqs + uint(k);                                                                   \
+        float nm = float(BUF.data[a_offset + ib].norm);                                           \
+        uint qb = uint(BUF.data[a_offset + ib].qs[j / 4]);                                        \
+        uint sb = uint(BUF.data[a_offset + ib].signs[j / 8]);                                     \
+        uint lo = (qb >> ((j % 4) * 2)) & 0x3;                                                    \
+        uint hi = (sb >> (j % 8)) & 0x1;                                                          \
+        r[k] = FLOAT_TYPE(T3C[lo | (hi << 2)] * nm);                                              \
+    }                                                                                             \
+    return r;                                                                                     \
+}
+
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
@@ -108,6 +129,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q5_0: FA_DEQUANT4_Q5_0(k_packed_q5_0)
             case FA_TYPE_Q5_1: FA_DEQUANT4_Q5_1(k_packed_q5_1)
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(k_packed_q8_0)
+            case FA_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(k_packed_turbo3_0)
         }
     } else {
         switch (FaTypeV) {
@@ -117,6 +139,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q5_0: FA_DEQUANT4_Q5_0(v_packed_q5_0)
             case FA_TYPE_Q5_1: FA_DEQUANT4_Q5_1(v_packed_q5_1)
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(v_packed_q8_0)
+            case FA_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(v_packed_turbo3_0)
         }
     }
     return FLOAT_TYPEV4(0);

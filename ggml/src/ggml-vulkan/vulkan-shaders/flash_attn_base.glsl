@@ -98,6 +98,7 @@ layout (binding = 6) readonly buffer MO {uint32_t data_mask_opt[];};
 #define FA_TYPE_Q5_1  7u
 #define FA_TYPE_Q8_0  8u
 #define FA_TYPE_Q1_0 41u
+#define FA_TYPE_TURBO3_0 43u
 
 // Number of matrix elements per buffer block, derived from the K/V type spec
 // constant. F32 is treated as a vec4 "block" of 4 floats. F16 uses block size 1
@@ -112,6 +113,7 @@ uint fa_block_elems(uint ty) {
         case FA_TYPE_Q5_1: return uint(QUANT_K_Q5_1);
         case FA_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
         case FA_TYPE_Q1_0: return uint(QUANT_K_Q1_0); // cm2-only, harmless elsewhere
+        case FA_TYPE_TURBO3_0: return uint(QUANT_K_TURBO3_0);
         default:           return 1u;
     }
 }
