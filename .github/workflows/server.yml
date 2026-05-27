@@ -93,18 +93,17 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha || github.head_ref || github.ref_name }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
         with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: "tools/ui/package-lock.json"
+          key: server-ubuntu-default
+          evict-old-files: 1d
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build
         id: cmake_build
         run: |
           cmake -B build \
-            -DLLAMA_BUILD_BORINGSSL=ON \
             -DGGML_SCHED_NO_REALLOC=ON
           cmake --build build --config ${{ matrix.build_type }} -j $(nproc) --target llama-server
 
@@ -142,10 +141,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha || github.head_ref || github.ref_name }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
         with:
-          node-version: "24"
+          key: server-windows-default
+          evict-old-files: 1d
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build
         id: cmake_build
