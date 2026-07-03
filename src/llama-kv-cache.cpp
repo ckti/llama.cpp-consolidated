@@ -163,6 +163,9 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    // #24060/MTP fix: iterate ALL layers (incl. nextn) so an all-nextn draft
+    // (gemma4-assistant: n_layer()==0) registers its KV layers; has_kv() still
+    // gates per-layer.
     const uint32_t n_layer = hparams.n_layer_all;
 
     // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
@@ -179,6 +182,9 @@ llama_kv_cache::llama_kv_cache(
         if (it == ctx_map.end()) {
             ggml_init_params params = {
                 // +3 for turbo rotation matrices (turbo_rotation + turbo_rotation_inv + turbo_innerq_scale_inv)
+                // Size this for the actual layer loop below. Some models expose extra
+                // KV-bearing layers through n_layer_all, and under-reserving tensor
+                // metadata corrupts later KV/checkpoint operations.
                 /*.mem_size   =*/ size_t((2u*(1 + n_stream)*n_layer + 3)*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
@@ -501,6 +507,8 @@ llama_kv_cache::llama_kv_cache(
     }
 
     // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+    // KV-cache sharing (MTP draft): a shared cache inherits head dims and the
+    // resolved rotation policy from its parent so draft and target agree.
     if (other) {
         n_embd_head_k_all = other->n_embd_head_k_all;
         n_embd_head_v_all = other->n_embd_head_v_all;
@@ -512,6 +520,12 @@ llama_kv_cache::llama_kv_cache(
         // fork. Enable per-side via LLAMA_ATTN_ROT_K_OVERRIDE=1 and/or
         // LLAMA_ATTN_ROT_V_OVERRIDE=1 if your specific model+KV combo benefits.
         //
+        // Why default OFF: empirical PPL+KLD testing on 7 model families
+        // (gemma-4 26B-A4B/31B/E2B, Qwen2.5-7B, Qwen3.5-2B, Mistral-Small-24B,
+        // phi-4, on q8/turbo4 KV) showed the optimal rotation policy is highly
+        // model-and-quant specific. No single default is correct everywhere, so
+        // users can enable per-side rotation via the env knobs below.
+        //
         // LLAMA_ATTN_ROT_DISABLE is preserved as a hard lock-out for optional
         // rotation paths; required DeepSeek indexer rotation remains enabled below.
         const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");
@@ -520,9 +534,15 @@ llama_kv_cache::llama_kv_cache(
             LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
         }
 
+        // Default: rotation OFF on both sides (safe across all tested model families).
+        // Override per side via env vars below.
         attn_rot_k = false;
         attn_rot_v = false;
 
+        // Per-side overrides. Set LLAMA_ATTN_ROT_K_OVERRIDE=1 / LLAMA_ATTN_ROT_V_OVERRIDE=1
+        // to enable rotation. The cache type and head-dim alignment guards below
+        // still apply: rotation only takes effect on quantized types with
+        // head_dim % 64 == 0 (master's #21038 requirements).
         const char * ROT_K_OV = getenv("LLAMA_ATTN_ROT_K_OVERRIDE");
         if (ROT_K_OV && atoi(ROT_K_OV) != 0 && !attn_rot_disable) {
             attn_rot_k =
@@ -530,7 +550,6 @@ llama_kv_cache::llama_kv_cache(
                 ggml_is_quantized(type_k) &&
                 hparams.n_embd_head_k() % 64 == 0;
         }
-
         const char * ROT_V_OV = getenv("LLAMA_ATTN_ROT_V_OVERRIDE");
         if (ROT_V_OV && atoi(ROT_V_OV) != 0 && !attn_rot_disable) {
             attn_rot_v =
@@ -539,7 +558,9 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_v() % 64 == 0;
         }
 
-        // always create Hadamard rotation tensors for DeepSeek lightning indexers
+        // always create Hadamard rotation tensors for DeepSeek V3.2 DSA lightning
+        // indexer: this is a functional requirement for the model, not optional
+        // tuning, so it overrides the default-off policy.
         if ((model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4) &&
                 hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;

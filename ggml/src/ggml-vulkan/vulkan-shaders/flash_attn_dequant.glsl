@@ -50,7 +50,6 @@ layout (binding = 2, std430) restrict readonly buffer V_PACKED_TURBO4_0 { block_
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
 layout (binding = 1) readonly buffer K_PACKED_Q4_1_P32 { block_q4_1_packed32 data[]; } k_packed_q4_1_p32;
 layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 data[]; } k_packed_q5_1_p32;
-#endif  // !DATA_A_TURBO3_0
 
 // Per-quant decode bodies are expanded once for the K view set and once for
 // the V view set. The macros take the buffer name as a parameter.
@@ -125,49 +124,49 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
 // qs byte (iqs/4) at iqs%4==0.
 #define FA_DEQUANT4_TURBO2_0(BUF) {                                                               \
     const float c[4] = float[4](-0.133462, -0.039994, 0.039994, 0.133462);                        \
-    const float norm = float(BUF.data[a_offset + ib].norm);                                        \
-    const uint qs_byte = uint(BUF.data[a_offset + ib].qs[iqs / 4]);                                \
-    const uint i0 = (qs_byte     ) & 0x3u;                                                          \
-    const uint i1 = (qs_byte >> 2) & 0x3u;                                                          \
-    const uint i2 = (qs_byte >> 4) & 0x3u;                                                          \
-    const uint i3 = (qs_byte >> 6) & 0x3u;                                                          \
-    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                            \
+    const float norm = float(BUF.data[a_offset + ib].norm);                                       \
+    const uint qs_byte = uint(BUF.data[a_offset + ib].qs[iqs / 4]);                               \
+    const uint i0 = (qs_byte     ) & 0x3u;                                                         \
+    const uint i1 = (qs_byte >> 2) & 0x3u;                                                         \
+    const uint i2 = (qs_byte >> 4) & 0x3u;                                                         \
+    const uint i3 = (qs_byte >> 6) & 0x3u;                                                         \
+    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                           \
 }
 
 // TurboQuant3 dequant: per-element centroid lookup. iqs is in [0, 128) at vec4
 // alignment (iqs%4 == 0), so all 4 elements share qs byte (iqs/4) and signs
-// byte (iqs/8). No iWHT here — graph handles rotation outside FA.
+// byte (iqs/8). No iWHT here, the graph handles rotation outside FA.
 #define FA_DEQUANT4_TURBO3_0(BUF) {                                                               \
-    const float c[8] = float[8](                                                                   \
-        -0.190685, -0.117832, -0.065717, -0.021460,                                                \
-         0.021460,  0.065717,  0.117832,  0.190685);                                               \
-    const float norm = float(BUF.data[a_offset + ib].norm);                                        \
-    const uint qs_byte  = uint(BUF.data[a_offset + ib].qs[iqs / 4]);                               \
-    const uint sgn_byte = uint(BUF.data[a_offset + ib].signs[iqs / 8]);                            \
-    const uint base = iqs & 0x7u;                                                                   \
-    const uint i0 = ((qs_byte     ) & 0x3) | (((sgn_byte >> (base    )) & 0x1u) << 2);             \
-    const uint i1 = ((qs_byte >> 2) & 0x3) | (((sgn_byte >> (base + 1)) & 0x1u) << 2);             \
-    const uint i2 = ((qs_byte >> 4) & 0x3) | (((sgn_byte >> (base + 2)) & 0x1u) << 2);             \
-    const uint i3 = ((qs_byte >> 6) & 0x3) | (((sgn_byte >> (base + 3)) & 0x1u) << 2);             \
-    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                            \
+    const float c[8] = float[8](                                                                  \
+        -0.190685, -0.117832, -0.065717, -0.021460,                                               \
+         0.021460,  0.065717,  0.117832,  0.190685);                                              \
+    const float norm = float(BUF.data[a_offset + ib].norm);                                       \
+    const uint qs_byte  = uint(BUF.data[a_offset + ib].qs[iqs / 4]);                              \
+    const uint sgn_byte = uint(BUF.data[a_offset + ib].signs[iqs / 8]);                           \
+    const uint base = iqs & 0x7u;                                                                 \
+    const uint i0 = ((qs_byte     ) & 0x3) | (((sgn_byte >> (base    )) & 0x1u) << 2);            \
+    const uint i1 = ((qs_byte >> 2) & 0x3) | (((sgn_byte >> (base + 1)) & 0x1u) << 2);            \
+    const uint i2 = ((qs_byte >> 4) & 0x3) | (((sgn_byte >> (base + 2)) & 0x1u) << 2);            \
+    const uint i3 = ((qs_byte >> 6) & 0x3) | (((sgn_byte >> (base + 3)) & 0x1u) << 2);            \
+    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                           \
 }
 
 // TurboQuant4 dequant: 4-bit indices, 2 per byte. iqs%4==0 means the 4
 // elements span 2 consecutive qs bytes (each holds 2 nibbles).
 #define FA_DEQUANT4_TURBO4_0(BUF) {                                                               \
-    const float c[16] = float[16](                                                                 \
-        -0.173926, -0.117195, -0.089527, -0.068756,                                                \
-        -0.051262, -0.035597, -0.020989, -0.006938,                                                \
-         0.006938,  0.020989,  0.035597,  0.051262,                                                \
-         0.068756,  0.089527,  0.117195,  0.173926);                                               \
-    const float norm = float(BUF.data[a_offset + ib].norm);                                        \
-    const uint b0 = uint(BUF.data[a_offset + ib].qs[iqs / 2    ]);                                 \
-    const uint b1 = uint(BUF.data[a_offset + ib].qs[iqs / 2 + 1]);                                 \
-    const uint i0 = (b0     ) & 0xFu;                                                               \
-    const uint i1 = (b0 >> 4) & 0xFu;                                                               \
-    const uint i2 = (b1     ) & 0xFu;                                                               \
-    const uint i3 = (b1 >> 4) & 0xFu;                                                               \
-    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                            \
+    const float c[16] = float[16](                                                                \
+        -0.173926, -0.117195, -0.089527, -0.068756,                                               \
+        -0.051262, -0.035597, -0.020989, -0.006938,                                               \
+         0.006938,  0.020989,  0.035597,  0.051262,                                               \
+         0.068756,  0.089527,  0.117195,  0.173926);                                              \
+    const float norm = float(BUF.data[a_offset + ib].norm);                                       \
+    const uint b0 = uint(BUF.data[a_offset + ib].qs[iqs / 2    ]);                                \
+    const uint b1 = uint(BUF.data[a_offset + ib].qs[iqs / 2 + 1]);                                \
+    const uint i0 = (b0     ) & 0xFu;                                                              \
+    const uint i1 = (b0 >> 4) & 0xFu;                                                              \
+    const uint i2 = (b1     ) & 0xFu;                                                              \
+    const uint i3 = (b1 >> 4) & 0xFu;                                                              \
+    return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                           \
 }
 
 #if defined(DATA_A_TURBO3_0)

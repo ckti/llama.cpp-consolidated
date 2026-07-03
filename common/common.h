@@ -645,6 +645,12 @@ struct common_params {
 
     // UI configs
     bool ui = true;
+
+    // Deprecated: use ui, ui_mcp_proxy, ui_config_json instead
+    bool webui = ui;
+    bool webui_mcp_proxy = false;
+    std::string webui_config_json;
+
     bool ui_mcp_proxy = false;
     std::string ui_config_json;
 
@@ -668,7 +674,9 @@ struct common_params {
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
 
-    float slot_prompt_similarity = 0.1f;
+    float   slot_prompt_similarity        = 0.1f;
+    float   slot_cache_key_similarity     = 0.5f;
+    int32_t slot_cache_key_min_prefix     = 32;
 
     // batched-bench params
     bool is_pp_shared   = false;
