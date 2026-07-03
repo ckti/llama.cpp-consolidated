@@ -3,7 +3,7 @@
 // Activations are quantized fp32 -> int8 with a per-128-K absmax scale (coarser than q8_1's per-32;
 // flagged for KLD validation). Dispatched only when M,N,K % 128 == 0 and cc >= 900; otherwise the
 // caller falls through to the standard MMQ path.
-#include "common.cuh"
+#include "mmq-hopper-q1.cuh"
 
 #include <mutex>
 #include <unordered_map>
