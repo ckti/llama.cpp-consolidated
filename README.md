@@ -118,6 +118,7 @@ All turbo formats use Walsh-Hadamard rotation followed by polar codebook quantiz
 | **CUDA** (NVIDIA) | `dp4a` for `TQ4_1S`, warp-cooperative dequant (16× less compute per block), multi-token / multi-GPU | Yes — turbo VEC FA (+9% decode); mixed `f16/bf16 + q8_0` without `GGML_CUDA_FA_ALL_QUANTS` | Load-time `TQ4_1S → q8_0` conversion path |
 | **HIP / ROCm** (AMD) | Portable `ggml_cuda_dp4a`; scalar half path for `TQ4_1S` on AMD | Yes — VEC FA forced for quantized KV; pool bypass for FA f16 temp buffers | RDNA3 (gfx1100), RDNA4, CDNA3 (MI300X / gfx942), CDNA4 (MI355X / gfx950). [cross-engine-mi300x](https://github.com/TheTom/turboquant_plus/blob/main/docs/papers/cross-engine-mi300x.md) |
 | **Vulkan** | `TQ4_1S` weights, `SET_ROWS` for `turbo2`/`turbo4` | coopmat flash attention with `turbo3` KV | Compute-shader path; nix-buildable |
+| **SYCL** (Intel) | `SET_ROWS` for `turbo2`/`turbo3`/`turbo4`, WHT rotation (group 64+128) | VEC FA for all turbo K/V combos (D=64-512) | Intel Arc (A380, B70), oneAPI 2025.2+; cross-turbo K/V combos supported |
 
 ### Model-family support
 
@@ -140,14 +141,14 @@ All turbo formats use Walsh-Hadamard rotation followed by polar codebook quantiz
 
 ### Prebuilt binaries
 
-The latest TurboQuant+ prebuilds are published on the [TurboQuant+ tqp-v0.2.0 release](https://github.com/TheTom/llama-cpp-turboquant/releases/tag/tqp-v0.2.0). This release includes the PR #197 turbo KV work plus the Apple Silicon Metal startup-crash fix from PR #200.
+The latest TurboQuant+ prebuilds are published on the [TurboQuant+ tqp-v0.3.0 release](https://github.com/TheTom/llama-cpp-turboquant/releases/tag/tqp-v0.3.0). This release adds DFlash speculative decoding, server slot save/restore across restarts, the Vulkan turbo4 layout resync, the sm_60/P100 FAST_FP16 carve-out, and 16 upstream P0/P1 fixes on top of the PR #197 turbo KV work.
 
 | Platform | Download | Notes |
 |---|---|---|
-| Linux x64 | [turboquant-plus-tqp-v0.2.0-linux-x64-cpu.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.2.0/turboquant-plus-tqp-v0.2.0-linux-x64-cpu.tar.gz) | CPU build with portable x64 CPU variants |
-| Linux x64 Vulkan | [turboquant-plus-tqp-v0.2.0-linux-x64-vulkan.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.2.0/turboquant-plus-tqp-v0.2.0-linux-x64-vulkan.tar.gz) | Vulkan build with CPU fallback variants |
-| macOS Apple Silicon | [turboquant-plus-tqp-v0.2.0-macos-arm64-metal.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.2.0/turboquant-plus-tqp-v0.2.0-macos-arm64-metal.tar.gz) | Metal build for arm64 Macs |
-| Windows x64 NVIDIA | [turboquant-plus-tqp-v0.2.0-windows-x64-cuda12.4.zip](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.2.0/turboquant-plus-tqp-v0.2.0-windows-x64-cuda12.4.zip) | CUDA 12.4 build with CUDA runtime DLLs bundled |
+| Linux x64 | [turboquant-plus-tqp-v0.3.0-linux-x64-cpu.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.3.0/turboquant-plus-tqp-v0.3.0-linux-x64-cpu.tar.gz) | CPU build with portable x64 CPU variants |
+| Linux x64 Vulkan | [turboquant-plus-tqp-v0.3.0-linux-x64-vulkan.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.3.0/turboquant-plus-tqp-v0.3.0-linux-x64-vulkan.tar.gz) | Vulkan build with CPU fallback variants |
+| macOS Apple Silicon | [turboquant-plus-tqp-v0.3.0-macos-arm64-metal.tar.gz](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.3.0/turboquant-plus-tqp-v0.3.0-macos-arm64-metal.tar.gz) | Metal build for arm64 Macs |
+| Windows x64 NVIDIA | [turboquant-plus-tqp-v0.3.0-windows-x64-cuda12.4.zip](https://github.com/TheTom/llama-cpp-turboquant/releases/download/tqp-v0.3.0/turboquant-plus-tqp-v0.3.0-windows-x64-cuda12.4.zip) | CUDA 12.4 build with CUDA runtime DLLs bundled |
 
 For ROCm/HIP or custom CUDA architectures, build from source with the flags below.
 
@@ -167,6 +168,11 @@ cmake -B build -DGGML_HIP=ON -DCMAKE_HIP_ARCHITECTURES="gfx1100;gfx942;gfx950" &
 
 # Vulkan
 cmake -B build -DGGML_VULKAN=ON && cmake --build build -j
+
+# Intel SYCL (oneAPI)
+source /opt/intel/oneapi/setvars.sh
+cmake -B build -DGGML_SYCL=ON -DGGML_SYCL_F16=ON \
+  -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx && cmake --build build -j
 ```
 
 ## Usage
@@ -218,6 +224,31 @@ llama-quantize model.f16.gguf model.tq4_1s.gguf TQ4_1S
 # TQ3_1S — smaller, accept ~1-2 PPL bump
 llama-quantize model.f16.gguf model.tq3_1s.gguf TQ3_1S
 ```
+
+### Server slot save/restore across restarts
+
+`llama-server` can persist a slot's KV state to disk and reload it later, including across a full process restart:
+
+```bash
+# start the server with a save path and context checkpoints enabled
+llama-server -m model.gguf --slot-save-path /path/to/slots --ctx-checkpoints 8
+
+# save slot 0 to disk
+curl -X POST 'http://localhost:8080/slots/0?action=save' \
+  -H 'Content-Type: application/json' -d '{"filename": "session1.bin"}'
+
+# ... restart the server ...
+
+# restore slot 0 from disk in the new process
+curl -X POST 'http://localhost:8080/slots/0?action=restore' \
+  -H 'Content-Type: application/json' -d '{"filename": "session1.bin"}'
+```
+
+Saving also writes a `session1.bin.ckpt` sidecar next to the state file, carrying the slot's in-memory context checkpoints (upstream's `llama_state_seq_save_file` only serializes tokens + KV cells, not checkpoints — they otherwise exist only in process memory and are lost across a restart). Restoring loads the sidecar back in, so a request that rolls back mid-prompt after a restore (e.g. a BPE re-tokenization at the tail of a long conversation) can resume from a checkpoint instead of forcing a full re-prefill.
+
+**This only matters for SWA or hybrid/recurrent-memory models** (Gemma-style sliding-window attention, Mamba/hybrid architectures). Plain dense-attention models never evict early KV positions, so the server can always truncate the cache to an earlier point directly — the checkpoint/rollback path is unreachable for them regardless of this feature, with or without a restart in between.
+
+If a state file has no sidecar (saved by an older build, or the file was moved on its own), restore falls back to synthesizing a single checkpoint from the tail of the restored state. That covers an exact-append continuation but not a deeper rollback, which degrades to a full re-prefill — the same behavior as before this feature existed, not a regression.
 
 ### Automatic behavior
 

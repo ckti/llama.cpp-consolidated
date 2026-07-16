@@ -63,6 +63,14 @@ export { default as DropdownMenuSearchable } from './DropdownMenuSearchable.svel
  * ```
  */
 export { default as DropdownMenuActions } from './DropdownMenuActions.svelte';
+
+/**
+ * **DesktopIconStrip** - Fixed icon strip for desktop sidebar
+ *
+ * Vertical icon strip shown on desktop when the sidebar is collapsed.
+ * Contains navigation shortcuts for new chat, search, MCP, import/export, and settings.
+ */
+export { default as DesktopIconStrip } from './DesktopIconStrip.svelte';
 /**
  * **SidebarNavigation** - Sidebar with actions menu and conversation list
  *
