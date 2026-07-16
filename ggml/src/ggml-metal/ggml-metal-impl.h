@@ -113,6 +113,7 @@
 #define FC_TURBO_WHT                   1700
 #define FC_TURBO_FLASH_P1              1800
 #define FC_TURBO_FLASH_P2              1900
+#define FC_GATED_DELTA_NET_WRITE_ROWS  (FC_GATED_DELTA_NET + 4)
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
