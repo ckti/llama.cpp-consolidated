@@ -575,6 +575,7 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_TURBO_WHT,
 
         GGML_OP_UNARY,
@@ -2606,6 +2607,17 @@ extern "C" {
             struct ggml_tensor  * states,
             struct ggml_tensor  * rows,
             int                   n_snap_slots);
+
+    // res: [n_kv, n_batch, 1, ne3]
+    //
+    // broadcast:
+    //   ne3 % ne33 == 0
+    GGML_API struct ggml_tensor * ggml_lightning_indexer(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * weights,
+            struct ggml_tensor  * mask);
 
     // custom operators
 
