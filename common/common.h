@@ -105,6 +105,7 @@ enum llama_example {
     LLAMA_EXAMPLE_EXPORT_GRAPH_OPS,
     LLAMA_EXAMPLE_DOWNLOAD,
     LLAMA_EXAMPLE_KV_MEAN_CENTER,
+    LLAMA_EXAMPLE_TOKENIZE,
 
     LLAMA_EXAMPLE_COUNT,
 };
@@ -646,6 +647,7 @@ struct common_params {
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     std::string hostname      = "127.0.0.1";
+    std::string server_base   = ""; // base URL of an external llama-server for llama-cli                         // NOLINT
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT
     std::string chat_template = "";                                                                         // NOLINT
@@ -735,7 +737,13 @@ struct common_params {
     bool process_output  = false; // collect data for the output tensor
     bool compute_ppl     = true;  // whether to compute perplexity
     bool show_statistics = false; // show imatrix statistics per tensor
-    bool parse_special   = false; // whether to parse special tokens during imatrix tokenization
+    bool parse_special   = false; // whether to parse special tokens during tokenization
+
+    // tokenize params
+    bool tokenize_stdin      = false; // read tokenizer input from stdin
+    bool tokenize_no_bos     = false; // do not add BOS token even if requested by the model
+    bool tokenize_ids        = false; // print token ids only
+    bool tokenize_show_count = false; // print total token count
 
     // cvector-generator params
     int n_pca_batch = 100;

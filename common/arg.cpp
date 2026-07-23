@@ -1616,6 +1616,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--stdin"},
+        "read tokenizer input from standard input",
+        [](common_params & params) {
+            params.tokenize_stdin = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--no-bos"},
+        "do not add a BOS token when tokenizing",
+        [](common_params & params) {
+            params.tokenize_no_bos = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--ids"},
+        "print token ids instead of token pieces",
+        [](common_params & params) {
+            params.tokenize_ids = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--show-count"},
+        "print the total number of tokens",
+        [](common_params & params) {
+            params.tokenize_show_count = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
         {"-ptc", "--print-token-count"}, "N",
         string_format("print token count every N tokens (default: %d)", params.n_print),
         [](common_params & params, int value) {
@@ -2918,7 +2946,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.parse_special = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_IMATRIX}));
+    ).set_examples({LLAMA_EXAMPLE_IMATRIX, LLAMA_EXAMPLE_TOKENIZE}));
     add_opt(common_arg(
         {"-pps"},
         string_format("is the prompt shared across parallel sequences (default: %s)", params.is_pp_shared ? "true" : "false"),
@@ -2999,6 +3027,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.port = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PORT"));
+    add_opt(common_arg(
+        {"--server-base"}, "URL",
+        "base URL of an already-running llama-server",
+        [](common_params & params, const std::string & value) {
+            params.server_base = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SERVER_BASE"));
     add_opt(common_arg(
         {"--reuse-port"},
         string_format("allow multiple sockets to bind to the same port (default: %s)", params.reuse_port ? "enabled" : "disabled"),

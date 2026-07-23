@@ -98,6 +98,8 @@ add_library(${TARGET}
     preset.h
     reasoning-budget.cpp
     reasoning-budget.h
+    regex-partial.cpp
+    regex-partial.h
     sampling.cpp
     sampling.h
     speculative.cpp

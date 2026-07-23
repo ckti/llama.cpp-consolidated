@@ -58,6 +58,9 @@ static_assert(sizeof(block_q8_1_mmq) == 4*QK8_1 + 4*sizeof(half2), "Unexpected b
 static_assert(sizeof(block_q8_1_mmq) == 4*sizeof(block_q8_1),      "Unexpected block_q8_1_mmq size");
 static_assert(sizeof(block_fp4_mmq)  == sizeof(block_q8_1_mmq),    "Unexpected block_fp4_mmq size");
 
+static constexpr int QK8_1_MMQ  = 4 * QK8_1;
+static constexpr int QK_FP4_MMQ = 8 * QK_MXFP4;
+
 static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
     switch (type_x) {
         case GGML_TYPE_Q1_0:
@@ -143,6 +146,11 @@ static constexpr __device__ int get_mmq_x_max_device() {
 static int get_mmq_y_host(const int cc) {
     return GGML_CUDA_CC_IS_AMD(cc) ? (GGML_CUDA_CC_IS_RDNA1(cc) ? 64 : 128) :
         ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64);
+}
+
+static int ggml_cuda_mmq_get_J_max(const ggml_type /*type*/, const bool /*fallback*/, const int cc, const int64_t ne11) {
+    const int mmq_y = get_mmq_y_host(cc);
+    return ne11 < mmq_y ? ne11 : mmq_y;
 }
 
 static constexpr __device__ int get_iter_k([[maybe_unused]] const ggml_type type) {
@@ -4279,4 +4287,3 @@ void ggml_cuda_op_mul_mat_q(
     const int64_t src1_padded_row_size, cudaStream_t stream);
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
-
