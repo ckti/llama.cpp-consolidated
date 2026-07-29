@@ -198,7 +198,271 @@ static constexpr __device__ int get_mmq_y_device() {
 #define MMQ_DP4A_TXS_Q5_K    tile_x_sizes{mmq_y*MMQ_TILE_NE_K*2 + mmq_y, mmq_y*MMQ_TILE_NE_K/QI5_K   + mmq_y/QI5_K,     mmq_y*MMQ_TILE_NE_K/8 + mmq_y/8}
 #define MMQ_DP4A_TXS_Q6_K    tile_x_sizes{mmq_y*MMQ_TILE_NE_K*2 + mmq_y, mmq_y*MMQ_TILE_NE_K/QI6_K   + mmq_y/QI6_K,     mmq_y*MMQ_TILE_NE_K/8 + mmq_y/8}
 
-static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml_type type, int mmq_y) {
+enum ggml_cuda_mmq_sram_layout {
+    GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0,
+    GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_1,
+    GGML_CUDA_MMQ_SRAM_LAYOUT_Q2_K,
+    GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K,
+    GGML_CUDA_MMQ_SRAM_LAYOUT_Q6_K,
+    GGML_CUDA_MMQ_SRAM_LAYOUT_FP4,   // MXFP4 and NVFP4 on Blackwell.
+    GGML_CUDA_MMQ_SRAM_LAYOUT_NVFP4, // Generic NVFP4
+};
+
+static constexpr __host__ __device__ int ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_sram_layout sram_layout) {
+    switch (sram_layout) {
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0:
+            return 2*MMQ_TILE_NE_K + 2*MMQ_TILE_NE_K/QI8_0 + 4;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_1:
+            return 2*MMQ_TILE_NE_K + 2*MMQ_TILE_NE_K/QI8_1 + 4;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_Q2_K:
+            return 2*MMQ_TILE_NE_K + MMQ_TILE_NE_K         + 4;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K:
+            return 2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2       + 4;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_Q6_K:
+            return 2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI6_K   + MMQ_TILE_NE_K/8 + 7;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_FP4:
+            return 2*MMQ_TILE_NE_K + 8                     + 4;
+        case GGML_CUDA_MMQ_SRAM_LAYOUT_NVFP4:
+            return 2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2       + 4;
+        default:
+            return -1;
+    }
+}
+
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0)  % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_1)  % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q2_K)  % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K)  % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q6_K)  % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_FP4)   % 8 == 4, "Wrong padding.");
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_NVFP4) % 8 == 4, "Wrong padding.");
+
+static_assert(ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_FP4) == ggml_cuda_mmq_get_sram_stride(GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_1), "Wrong tile size for MXFP4");
+
+// Config options for the MMQ kernel.
+// Should not affect results, only speed/register pressure/shared memory use.
+struct ggml_cuda_mmq_config {
+    ggml_type                 type;        // src0->type
+    int                       nthreads;    // Number of threads per CUDA block.
+    int                       occupancy;   // Targeted occupancy for the MMA kernel.
+    int                       I;           // SRAM tile width in src0->ne[1]/dst->ne[0] direction.
+    int                       J;           // SRAM tile width in src1->ne[1]/dst->ne[1] direction.
+    ggml_cuda_mmq_sram_layout sram_layout; // SRAM tile length in src0->ne[0]/src1->ne[0] direction (physical 32 bit elements).
+    int                       K_vram;      // VRAM tile length in src0->ne[0]/src1->ne[0] direction (logical elements).
+    bool                      stream_k;    // Whether or not to use stream-k decomposition.
+    bool                      fallback;    // Whether a fallback for out-of-bounds check in src0->ne[1] direction is needed.
+
+    constexpr __host__ __device__ ggml_cuda_mmq_config(
+            ggml_type type, int nthreads, int occupancy, int I, int J, ggml_cuda_mmq_sram_layout sram_layout, int K_vram, bool stream_k, bool fallback) :
+        type(type), nthreads(nthreads), occupancy(occupancy), I(I), J(J), sram_layout(sram_layout), K_vram(K_vram), stream_k(stream_k), fallback(fallback) {}
+
+    constexpr __device__ int rows_per_warp() const {
+#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        return 16;
+#else
+        return J >= 48 && J % 16 == 0 ? 32 : 16;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+
+    // TODO transition all combinations of GPUs and quantizations to the MMA data layout.
+    __host__ int use_mma_data_layout(const int cc) const {
+        if (amd_mfma_available(cc) || amd_wmma_available(cc) || turing_mma_available(cc)) {
+            return true;
+        }
+        return false;
+    }
+
+    constexpr __device__ bool use_mma_data_layout() const {
+#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)
+        return true;
+#else
+        return false;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)
+    }
+
+};
+
+#define CASE(type_, nthreads_, occupancy_, I_, J_, sram_layout_, K_vram_, stream_k_, fallback_)                                           \
+    if (type == (type_) && J == (J_) && fallback == (fallback_)) {                                                                        \
+        static_assert((nthreads_) %  32 == 0 && (nthreads_)       <= 512, "bad nthreads");                                                \
+        static_assert(                          (occupancy_)      <=   8, "bad occupancy");                                               \
+        static_assert((I_)        %  32 == 0,                             "bad I");                                                       \
+        static_assert((J_)        %   8 == 0,                             "bad J");                                                       \
+        static_assert((K_vram_)   % 256 == 0,                             "bad K_vram");                                                  \
+        return ggml_cuda_mmq_config((type_), (nthreads_), (occupancy_), (I_), (J_), (sram_layout_), (K_vram_), (stream_k_), (fallback_)); \
+    }                                                                                                                                     \
+
+#include "mmq-config-pascal.cuh"
+#include "mmq-config-ampere.cuh"
+#include "mmq-config-blackwell.cuh"
+
+#include "mmq-config-cdna.cuh"
+#include "mmq-config-rdna2.cuh"
+#include "mmq-config-rdna3.cuh"
+#include "mmq-config-rdna3-5.cuh"
+#include "mmq-config-rdna4.cuh"
+
+#undef CASE
+
+static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type type, const int J, const bool fallback, const int cc) {
+    if (GGML_CUDA_CC_IS_AMD(cc)) {
+        if (GGML_CUDA_CC_IS_CDNA(cc)) {
+            return ggml_cuda_mmq_get_config_cdna(type, J, fallback);
+        }
+        if (GGML_CUDA_CC_IS_RDNA4(cc)) {
+            return ggml_cuda_mmq_get_config_rdna4(type, J, fallback);
+        }
+        if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
+            return ggml_cuda_mmq_get_config_rdna3_5(type, J, fallback);
+        }
+        if (GGML_CUDA_CC_IS_RDNA3(cc)) {  // covers RDNA 3.0
+            return ggml_cuda_mmq_get_config_rdna3(type, J, fallback);
+        }
+        return ggml_cuda_mmq_get_config_rdna2(type, J, fallback);
+    }
+    if (blackwell_mma_available(cc)) {
+        return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
+    }
+    if (ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) {
+        return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
+    }
+    return ggml_cuda_mmq_get_config_pascal(type, J, fallback);
+}
+
+static constexpr __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(ggml_type type, int J, bool fallback) {
+#ifdef GGML_USE_HIP
+#ifdef CDNA
+    return ggml_cuda_mmq_get_config_cdna(type, J, fallback);
+#elif defined(RDNA4)
+    return ggml_cuda_mmq_get_config_rdna4(type, J, fallback);
+#elif defined(RDNA3_5)
+    return ggml_cuda_mmq_get_config_rdna3_5(type, J, fallback);
+#elif defined(RDNA3)
+    return ggml_cuda_mmq_get_config_rdna3(type, J, fallback);
+#else
+    return ggml_cuda_mmq_get_config_rdna2(type, J, fallback);
+#endif // CDNA
+#else
+#ifdef BLACKWELL_MMA_AVAILABLE
+    return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
+#elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
+    return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
+#else
+    return ggml_cuda_mmq_get_config_pascal(type, J, fallback);
+#endif // BLACKWELL_MMA_AVAILABLE
+#endif // GGML_USE_HIP
+    GGML_UNUSED_VARS(type, J, fallback);
+}
+
+static __host__ int ggml_cuda_mmq_get_type(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).type;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_type(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).type;
+}
+
+static __host__ int ggml_cuda_mmq_get_nthreads(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).nthreads;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_nthreads(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).nthreads;
+}
+
+static __host__ int ggml_cuda_mmq_get_occupancy(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).occupancy;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_occupancy(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).occupancy;
+}
+
+static __host__ int ggml_cuda_mmq_get_I(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).I;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_I(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).I;
+}
+
+static __host__ int ggml_cuda_mmq_get_J(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).J;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_J(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).J;
+}
+
+static __host__ ggml_cuda_mmq_sram_layout ggml_cuda_mmq_get_sram_layout(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).sram_layout;
+}
+
+static constexpr __device__ ggml_cuda_mmq_sram_layout ggml_cuda_mmq_get_sram_layout(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).sram_layout;
+}
+
+static __host__ int ggml_cuda_mmq_get_K_vram(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).K_vram;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_K_vram(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).K_vram;
+}
+
+static __host__ bool ggml_cuda_mmq_get_stream_k(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).stream_k;
+}
+
+static constexpr __device__ bool ggml_cuda_mmq_get_stream_k(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).stream_k;
+}
+
+static __host__ int ggml_cuda_mmq_get_fallback(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_config(type, J, fallback, cc).fallback;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_fallback(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).fallback;
+}
+
+// ---------------------------------------------------------------------------------------------
+
+static __host__ int ggml_cuda_mmq_get_sram_stride(const ggml_type type, const int J, const bool fallback, const int cc) {
+    return ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_get_sram_layout(type, J, fallback, cc));
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_sram_stride(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_get_sram_layout(type, J, fallback));
+}
+
+static __host__ int ggml_cuda_mmq_get_J_max(const ggml_type type, const bool fallback, const int cc, const int64_t ne11) {
+    int ret = std::min(ne11, int64_t(512));
+    ret -= ret % 8;
+    for (;ret > 0; ret -= 8) {
+        if (ggml_cuda_mmq_get_config(type, ret, fallback, cc).type != GGML_TYPE_COUNT) {
+            return ret;
+        }
+    }
+    return ret;
+}
+
+static constexpr __device__ int ggml_cuda_mmq_get_rows_per_warp(ggml_type type, int J, bool fallback) {
+    return ggml_cuda_mmq_get_config(type, J, fallback).rows_per_warp();
+}
+
+#define MMQ_DP4A_TXS_Q4_0    tile_x_sizes{I*MMQ_TILE_NE_K   + I, I*MMQ_TILE_NE_K/QI4_0   + I/QI4_0,     0}
+#define MMQ_DP4A_TXS_Q4_1    tile_x_sizes{I*MMQ_TILE_NE_K   + I, I*MMQ_TILE_NE_K/QI4_1   + I/QI4_1,     0}
+#define MMQ_DP4A_TXS_Q8_0    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*2/QI8_0 + I/(QI8_0/2), 0}
+#define MMQ_DP4A_TXS_Q8_0_16 tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*4/QI8_0 + I/(QI8_0/4), 0}
+#define MMQ_DP4A_TXS_Q8_1    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*2/QI8_1 + I/(QI8_1/2), 0}
+#define MMQ_DP4A_TXS_Q2_K    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K         + I,           0}
+#define MMQ_DP4A_TXS_Q3_K    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I,                                     I*MMQ_TILE_NE_K/8 + I/8}
+#define MMQ_DP4A_TXS_Q4_K    tile_x_sizes{I*MMQ_TILE_NE_K   + I, I*MMQ_TILE_NE_K/QI4_K,                 I*MMQ_TILE_NE_K/8 + I/8}
+#define MMQ_DP4A_TXS_Q5_K    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K/QI5_K   + I/QI5_K,     I*MMQ_TILE_NE_K/8 + I/8}
+#define MMQ_DP4A_TXS_Q6_K    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K/QI6_K   + I/QI6_K,     I*MMQ_TILE_NE_K/8 + I/8}
+
+static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml_type type, int I) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return MMQ_DP4A_TXS_Q8_0;
         case GGML_TYPE_Q2_0:    return MMQ_DP4A_TXS_Q8_0;
@@ -4320,26 +4584,30 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 #define DECL_MMQ_CASE(type)                                                        \
     template void mul_mat_q_case<type>(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) \
 
+extern DECL_MMQ_CASE(GGML_TYPE_Q1_0);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_0);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
 extern DECL_MMQ_CASE(GGML_TYPE_Q5_0);
 extern DECL_MMQ_CASE(GGML_TYPE_Q5_1);
 extern DECL_MMQ_CASE(GGML_TYPE_Q8_0);
-extern DECL_MMQ_CASE(GGML_TYPE_MXFP4);
-extern DECL_MMQ_CASE(GGML_TYPE_NVFP4);
+// -----------------------------------------
 extern DECL_MMQ_CASE(GGML_TYPE_Q2_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q3_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q5_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q6_K);
+// -----------------------------------------
+extern DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XS);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ3_XXS);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
-extern DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_NL);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
+// -----------------------------------------
+extern DECL_MMQ_CASE(GGML_TYPE_MXFP4);
+extern DECL_MMQ_CASE(GGML_TYPE_NVFP4);
 
 // -------------------------------------------------------------------------------------------------------------------------
 
