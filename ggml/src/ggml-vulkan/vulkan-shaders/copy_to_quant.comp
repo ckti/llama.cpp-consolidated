@@ -215,133 +215,35 @@ void quantize(uint dst_idx, uint src_idx)
 #endif
 
 #if defined(DATA_A_Q2_0)
+uint quantize_q2_0(float x)
+{
+    const int q = int(x >= 0.0f ? floor(x + 0.5f) : ceil(x - 0.5f)) + 1;
+    return uint(clamp(q, 0, 3));
+}
+
 void quantize(uint dst_idx, uint src_idx)
 {
-    float amax = 0.0;
+    float amax = 0.0f;
 
     [[unroll]] for (int j = 0; j < QUANT_K_Q2_0; ++j) {
-        amax = max(amax, abs(data_s[src_idx + j]));
+        amax = max(amax, abs(float(data_s[src_idx + j])));
     }
 
-    const float d  = amax;
-    const float id = (d > 0.0) ? 1.0/d : 0.0;
+    const float d = amax;
+    const float id = d != 0.0f ? 1.0f / d : 0.0f;
 
     data_q[dst_idx].d = float16_t(d);
 
     [[unroll]] for (int j = 0; j < QUANT_K_Q2_0 / 4; ++j) {
-        data_q[dst_idx].qs[j] = uint8_t(0);
-    }
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q2_0; ++j) {
-        int q = int(round(data_s[src_idx + j] * id)) + 1;
-        q = clamp(q, 0, 3);
-        data_q[dst_idx].qs[j / 4] |= uint8_t(q << ((j % 4) * 2));
+        const uint q0 = quantize_q2_0(float(data_s[src_idx + 4*j    ]) * id);
+        const uint q1 = quantize_q2_0(float(data_s[src_idx + 4*j + 1]) * id);
+        const uint q2 = quantize_q2_0(float(data_s[src_idx + 4*j + 2]) * id);
+        const uint q3 = quantize_q2_0(float(data_s[src_idx + 4*j + 3]) * id);
+        data_q[dst_idx].qs[j] = uint8_t(q0 | (q1 << 2u) | (q2 << 4u) | (q3 << 6u));
     }
 }
 #endif
 
-#if defined(DATA_A_TURBO3_0)
-const float TS1[128] = float[128](
-    -1,  1,  1, -1, -1,  1, -1,  1, -1, -1,  1,  1,  1,  1,  1,  1,
-     1, -1,  1, -1,  1, -1, -1,  1,  1,  1, -1,  1,  1, -1, -1, -1,
-    -1,  1,  1, -1,  1,  1, -1,  1, -1,  1,  1, -1, -1,  1, -1,  1,
-     1,  1,  1, -1, -1, -1, -1, -1,  1, -1,  1,  1,  1,  1, -1,  1,
-    -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1, -1, -1, -1,  1,  1,
-     1, -1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1, -1,  1, -1,
-    -1,  1,  1, -1,  1, -1,  1, -1,  1,  1,  1,  1, -1,  1, -1,  1,
-     1, -1,  1,  1, -1, -1, -1, -1, -1,  1,  1, -1,  1,  1, -1,  1
-);
-
-const float TS2[128] = float[128](
-     1,  1,  1,  1, -1,  1,  1, -1,  1, -1, -1, -1,  1, -1, -1, -1,
-     1,  1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1, -1,  1,  1,  1,
-     1,  1, -1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,  1, -1,
-     1, -1,  1,  1,  1, -1, -1,  1, -1, -1, -1, -1, -1, -1,  1,  1,
-     1, -1,  1, -1, -1, -1, -1,  1, -1,  1, -1,  1, -1, -1,  1,  1,
-    -1,  1, -1,  1,  1, -1,  1, -1, -1, -1, -1,  1, -1, -1,  1, -1,
-     1, -1,  1,  1,  1, -1, -1,  1, -1,  1, -1,  1,  1, -1, -1,  1,
-    -1,  1, -1,  1,  1, -1,  1, -1,  1, -1, -1, -1, -1, -1,  1, -1
-);
-
-const float TINV = 0.08838834764831845;  // 1 / sqrt(128)
-
-const float TC[8] = float[8](
-    -0.190685, -0.117832, -0.065717, -0.021460,
-     0.021460,  0.065717,  0.117832,  0.190685
-);
-
-const float TM[7] = float[7](
-    -0.154259, -0.091775, -0.043589,
-     0.0,
-     0.043589,  0.091775,  0.154259
-);
-
-#if defined(SET_ROWS)
-
-shared float wht[128];
-shared float sg_acc[16];
-shared float gnrm;
-
-void quantize_block(uint b, uint o) {
-    [[unroll]] for (int j = 0; j < 32; ++j) data_q[b].qs[j]    = uint8_t(0);
-    [[unroll]] for (int j = 0; j < 16; ++j) data_q[b].signs[j] = uint8_t(0);
-    float rs = 0.0;
-    [[unroll]] for (int j = 0; j < 128; ++j) {
-        float v  = wht[o + j];
-        uint  i  = v < TM[0] ? 0 : v < TM[1] ? 1 : v < TM[2] ? 2 : v < TM[3] ? 3 :
-                   v < TM[4] ? 4 : v < TM[5] ? 5 : v < TM[6] ? 6 : 7;
-        rs += TC[i] * TC[i];
-        uint low2 = i & 0x3;
-        uint hi1  = (i >> 2) & 0x1;
-        data_q[b].qs[j / 4]    |= uint8_t(low2 << ((j % 4) * 2));
-        data_q[b].signs[j / 8] |= uint8_t(hi1  << (j % 8));
-    }
-    float rn = sqrt(rs);
-    data_q[b].norm = float16_t((rn > 1e-10) ? (gnrm / rn) : gnrm);
-}
-
-#endif // defined(SET_ROWS)
-#endif // defined(DATA_A_TURBO3_0)
-
-#if defined(DATA_A_TQ4_1S)
-
-const float TQ4_SIGNS[32] = float[32](
-    +1, -1, +1, -1, +1, +1, -1, +1,
-    -1, -1, +1, -1, +1, +1, -1, +1,
-    -1, -1, +1, -1, +1, -1, -1, +1,
-    -1, +1, +1, -1, +1, -1, -1, +1
-);
-
-const float TQ4_INV_SQRT32 = 0.17677669529663688;  // 1 / sqrt(32)
-
-const float TQ4_CENTROIDS[16] = float[16](
-    -2.732590, -2.069017, -1.618046, -1.256231,
-    -0.942340, -0.656759, -0.388048, -0.128395,
-     0.128395,  0.388048,  0.656759,  0.942340,
-     1.256231,  1.618046,  2.069017,  2.732590
-);
-
-// Midpoint thresholds for nearest-centroid binary search (16 centroids)
-uint tq4_choose_index(float val) {
-    if (val < -2.400804) return 0u;
-    if (val < -1.843532) return 1u;
-    if (val < -1.437139) return 2u;
-    if (val < -1.099286) return 3u;
-    if (val < -0.799550) return 4u;
-    if (val < -0.522404) return 5u;
-    if (val < -0.258222) return 6u;
-    if (val <  0.000000) return 7u;
-    if (val <  0.258222) return 8u;
-    if (val <  0.522404) return 9u;
-    if (val <  0.799550) return 10u;
-    if (val <  1.099286) return 11u;
-    if (val <  1.437139) return 12u;
-    if (val <  1.843532) return 13u;
-    if (val <  2.400804) return 14u;
-    return 15u;
-}
-
-#endif // defined(DATA_A_TQ4_1S)
 #if defined(DATA_A_IQ4_NL)
 uint best_index(float x) {
     if (x <= kvalues_iq4nl[0]) return 0;

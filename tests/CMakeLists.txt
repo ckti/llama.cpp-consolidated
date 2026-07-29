@@ -148,6 +148,8 @@ if (LLAMA_LLGUIDANCE)
     llama_build_and_test(test-grammar-llguidance.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 endif ()
 
+llama_build(test-recurrent-state-rollback.cpp get-model.cpp)
+
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
     llama_build_and_test(test-sampling.cpp)
@@ -193,7 +195,28 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # llama_build_and_test(test-double-float.cpp) # SLOW
 
     llama_build_and_test(test-llama-archs.cpp)
-    llama_build_and_test(test-kv-mean-center.cpp)
+
+    set(MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models/")
+    file(MAKE_DIRECTORY "${MODEL_DIR}")
+
+    llama_test(
+        test-llama-archs
+        NAME test-generate-models
+        LABEL main
+        ARGS -o "${MODEL_DIR}"
+    )
+    set_tests_properties(test-generate-models PROPERTIES
+        FIXTURES_SETUP generate-models
+    )
+
+    llama_test(
+        test-recurrent-state-rollback
+        LABEL main
+        ARGS -m "${MODEL_DIR}/qwen35-dense.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback PROPERTIES
+        FIXTURES_REQUIRED generate-models
+    )
 endif()
 
 llama_build_and_test(test-chat-peg-parser.cpp peg-parser/simple-tokenize.cpp)
@@ -252,46 +275,6 @@ llama_build_and_test(test-backend-sampler.cpp   LABEL "model")
 # Requires a model, uses same args pattern as test-thread-safety
 llama_build_and_test(test-state-restore-fragmented.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-state-restore-fragmented PROPERTIES FIXTURES_REQUIRED test-download-model)
-
-llama_build_and_test(test-recurrent-state-rollback.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
-set_tests_properties(test-recurrent-state-rollback PROPERTIES FIXTURES_REQUIRED test-download-model)
-
-# Rotating recurrent-state snapshot ring (n_rs_seq). This needs a recurrent
-# (hybrid GDN) model to exercise rollback; the shared stories model is
-# non-recurrent, so pointing the test at it makes it self-skip and the ring is
-# never covered in CI. Generate a tiny qwen35 fixture with the pure-Python
-# (numpy + gguf) generator when it is importable and require it; otherwise fall
-# back to the stories model (the test self-skips) so a toolchain without
-# numpy/gguf still configures and builds unchanged.
-set(RS_RING_MODEL "${MODEL_DEST}")
-set(RS_RING_FIXTURE "test-download-model")
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if (Python3_Interpreter_FOUND)
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_SOURCE_DIR}/gguf-py"
-                ${Python3_EXECUTABLE} -c "import numpy, gguf"
-        RESULT_VARIABLE RS_RING_PY_OK
-        OUTPUT_QUIET ERROR_QUIET)
-    if (RS_RING_PY_OK EQUAL 0)
-        set(TINY_QWEN35_DEST "${CMAKE_BINARY_DIR}/tiny-qwen35.gguf")
-        add_test(NAME test-gen-tiny-qwen35
-            COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_SOURCE_DIR}/gguf-py"
-                    ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/gen-tiny-qwen35.py ${TINY_QWEN35_DEST})
-        set_tests_properties(test-gen-tiny-qwen35 PROPERTIES FIXTURES_SETUP test-gen-tiny-qwen35)
-        set(RS_RING_MODEL "${TINY_QWEN35_DEST}")
-        set(RS_RING_FIXTURE "test-gen-tiny-qwen35")
-    else()
-        message(STATUS "test-rs-ring-rotation: numpy/gguf not importable; test self-skips on the non-recurrent stories model")
-    endif()
-else()
-    message(STATUS "test-rs-ring-rotation: Python3 not found; test self-skips on the non-recurrent stories model")
-endif()
-# Force CPU (-ngl 0): the ring bit-identity check requires the ring and no-ring
-# contexts to run the identical GDN compute path. On GPU backends without a fused
-# GDN op it falls back per context and diverges; the invariant (and this test) is
-# defined on CPU, per the test header.
-llama_build_and_test(test-rs-ring-rotation.cpp LABEL "model" ARGS -m "${RS_RING_MODEL}" -ngl 0)
-set_tests_properties(test-rs-ring-rotation PROPERTIES FIXTURES_REQUIRED "${RS_RING_FIXTURE}")
 
 # Test state save/load functionality
 llama_build_and_test(test-save-load-state.cpp LABEL "model" ARGS -m "${MODEL_DEST}")

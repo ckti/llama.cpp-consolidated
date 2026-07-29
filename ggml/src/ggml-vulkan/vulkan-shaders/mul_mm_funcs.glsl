@@ -155,18 +155,14 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
 
-            const uint ib  = idx / 32;
-            const uint iqs = idx & 0x1fu;
+            const uint ib = idx / 16;
+            const uint iqs = idx & 0xfu;
 
-            const float d = float(data_a[ib].d);
-            const uint byte_val = uint(data_a[ib].qs[iqs]);
+            const FLOAT_TYPE d = FLOAT_TYPE(data_a[ib].d);
+            const uint bits = uint(data_a[ib].qs[iqs]);
 
-            buf_a[buf_idx    ] = FLOAT_TYPEV2(
-                float(int( byte_val        & 3u) - 1) * d,
-                float(int((byte_val >> 2u) & 3u) - 1) * d);
-            buf_a[buf_idx + 1] = FLOAT_TYPEV2(
-                float(int((byte_val >> 4u) & 3u) - 1) * d,
-                float(int((byte_val >> 6u) & 3u) - 1) * d);
+            buf_a[buf_idx    ] = d * (FLOAT_TYPEV2(bits & 3u, (bits >> 2u) & 3u) - FLOAT_TYPEV2(1.0f));
+            buf_a[buf_idx + 1] = d * (FLOAT_TYPEV2((bits >> 4u) & 3u, bits >> 6u) - FLOAT_TYPEV2(1.0f));
 #elif defined(DATA_A_Q2_K)
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;

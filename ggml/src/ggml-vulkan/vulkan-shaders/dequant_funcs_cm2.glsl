@@ -67,9 +67,16 @@ float16_t dequantFuncQ2_0(const in decodeBufQ2_0 bl, const in uint blockCoords[2
 {
     const float16_t d = bl.block.d;
     const uint idx = coordInBlock[1];
-    const uint byte_val = uint(bl.block.qs[idx >> 2]);
-    const uint shift = (idx & 3u) * 2u;
-    return float16_t(int((byte_val >> shift) & 3u) - 1) * d;
+    const uint bits = uint(bl.block.qs[idx >> 2]) >> (2u * (idx & 3u));
+    return (float16_t(bits & 3u) - float16_t(1.0)) * d;
+}
+
+f16vec4 dequantFuncQ2_0_v(const in decodeBufQ2_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint bits = uint(bl.block.qs[idx >> 2]);
+    return f16vec4((vec4(bits & 3u, (bits >> 2u) & 3u, (bits >> 4u) & 3u, bits >> 6u) - 1.0f) * float(d));
 }
 
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ4_0 {
@@ -1385,6 +1392,7 @@ float16_t dequantFuncTURBO3_0(const in decodeBufTURBO3_0 bl, const in uint block
 #define dequantFuncA_v dequantFuncQ1_0_v
 #elif defined(DATA_A_Q2_0)
 #define dequantFuncA dequantFuncQ2_0
+#define dequantFuncA_v dequantFuncQ2_0_v
 #elif defined(DATA_A_Q4_0)
 #define dequantFuncA dequantFuncQ4_0
 #define dequantFuncA_v dequantFuncQ4_0_v
