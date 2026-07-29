@@ -929,7 +929,8 @@ static int64_t get_row_rounding(const std::array<float, GGML_CUDA_MAX_DEVICES> &
         }
 
         const int cc = ggml_cuda_info().devices[id].cc;
-        row_rounding = std::max(row_rounding, (int64_t)get_mmq_y_host(cc));
+        GGML_UNUSED(cc);
+        row_rounding = std::max(row_rounding, (int64_t)128);
     }
     return row_rounding;
 }
@@ -2144,7 +2145,8 @@ static void ggml_cuda_op_mul_mat(
         if (quantize_src1) {
             size_t src_1_ddq_size = nrows1*src1_padded_col_size*q8_1_ts/q8_1_bs;
             if (quantize_src1 == quantize_mmq_q8_1_cuda) {
-                src_1_ddq_size += get_mmq_x_max_host(dev[id].cc)*sizeof(block_q8_1_mmq);
+                GGML_UNUSED(dev[id].cc);
+                src_1_ddq_size += 128*sizeof(block_q8_1_mmq);
             }
             dev[id].src1_ddq = dev[id].src1_ddq_alloc.alloc(ctx.pool(id), src_1_ddq_size);
 
@@ -2863,7 +2865,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     } else if (use_mul_mat_vec_q) {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
     } else if (use_mul_mat_q) {
-        ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+        ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && is_tq_weight && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
         // Fused TQ weight mul_mat with pre-rotated activations via warp shuffle WHT
         // Handles ne[1]=1 (decode) and ne[1]≤8 (multi-token / speculative decoding)
