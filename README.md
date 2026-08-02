@@ -6,6 +6,8 @@
 > to support the [Bonsai 1-bit models](https://huggingface.co/prism-ml/Bonsai-8B-gguf)
 >
 > Note: this is not an official fork and is not supported by the Prism-ML team - this is just a personal fork to demo Bonsai until official support is added
+>
+> Q2_0 model files are backend/build specific: `*-Q2_0.gguf` uses this fork's group-size-128 format, while `*-Q2_0_g64.gguf` is the mainline llama.cpp format currently used by upstream CPU/Metal support. Use a complete matching build; do not mix this fork's `ggml-*` libraries into a stock llama.cpp build.
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
