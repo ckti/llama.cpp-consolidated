@@ -1404,9 +1404,43 @@ static std::string gbnf_char_class(const std::vector<uint32_t> & chars, bool neg
     return s + "]";
 }
 
+struct gbnf_prefix_next_piece {
+    std::vector<uint32_t> prefix;
+    std::vector<uint32_t> next_chars;
+};
+
+static void gbnf_collect_prefix_and_next(
+        const common_trie & trie,
+        size_t              node,
+        std::vector<uint32_t> & prefix,
+        std::vector<gbnf_prefix_next_piece> & out) {
+    const auto & tnode = trie.nodes[node];
+    if (tnode.pattern < 0 && !tnode.children.empty()) {
+        gbnf_prefix_next_piece piece;
+        piece.prefix = prefix;
+        for (const auto & child : tnode.children) {
+            piece.next_chars.push_back(child.first);
+        }
+        out.push_back(std::move(piece));
+    }
+
+    for (const auto & child : tnode.children) {
+        prefix.push_back(child.first);
+        gbnf_collect_prefix_and_next(trie, child.second, prefix, out);
+        prefix.pop_back();
+    }
+}
+
+static std::vector<gbnf_prefix_next_piece> gbnf_collect_prefix_and_next(const common_trie & trie) {
+    std::vector<gbnf_prefix_next_piece> out;
+    std::vector<uint32_t> prefix;
+    gbnf_collect_prefix_and_next(trie, 0, prefix, out);
+    return out;
+}
+
 static std::string gbnf_excluding_pattern(const std::vector<std::string> & strings) {
-    trie matcher(strings);
-    auto pieces = matcher.collect_prefix_and_next();
+    common_trie matcher(strings);
+    auto pieces = gbnf_collect_prefix_and_next(matcher);
 
     std::string pattern;
     std::string trailing;  // optional proper-prefix of a delimiter, allowed only at the very end

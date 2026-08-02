@@ -512,12 +512,14 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
         task.opts       = opts;
         tasks.push_back(task);
     }
+    bool had_spec_url = false;
     if (!params.speculative.draft.mparams.url.empty()) {
         common_download_task task;
         task.url        = params.speculative.draft.mparams.url;
         task.local_path = params.speculative.draft.mparams.path;
         task.opts       = opts;
         tasks.push_back(task);
+        had_spec_url = true;
     }
 
     // handle hf_plan tasks
@@ -618,7 +620,7 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
             params.mmproj.path = hf_cache::finalize_file(plan.mmproj);
         });
     }
-    if (!plan.mtp.local_path.empty()) {
+    if (!plan.mtp.local_path.empty() && !had_spec_url) {
         tasks.emplace_back(plan.mtp, opts, [&]() {
             // only fall back to the discovered MTP head when no draft was explicitly provided
             if (params.speculative.draft.mparams.empty()) {
@@ -655,16 +657,6 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
             params.models_preset    = hf_cache::finalize_file(plan.preset);
             params.model = common_params_model{}; // make sure to clear model, so server starts in router mode
         });
-    }
-
-    // handle plan_spec (e.g. --spec-draft-hf)
-    if (!plan_spec.model_files.empty()) {
-        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
-    }
-
-    // handle vocoder plan (e.g. --hf-repo-v)
-    if (!plan_voc.model_files.empty()) {
-        add_tasks(plan_voc.model_files, plan_voc.primary, params.vocoder.model);
     }
 
     // run all tasks in parallel
