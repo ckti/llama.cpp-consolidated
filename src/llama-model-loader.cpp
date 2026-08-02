@@ -463,7 +463,7 @@ namespace GGUFMeta {
             struct GGUFMeta::ArrayInfo arr_info =
                 GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(metadata, kid);
 
-            if (n != arr_info.length) {
+            if (n != 0 && n != arr_info.length) {
                 throw std::runtime_error(format("key %s has wrong array length; expected %u, got %u", key.c_str(), n, (uint32_t) arr_info.length));
             }
 
@@ -516,6 +516,9 @@ namespace GGUFMeta {
     template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      3>>  (enum llm_kv kid, std::array<int,      3>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      5>>  (enum llm_kv kid, std::array<int,      5>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      6>>  (enum llm_kv kid, std::array<int,      6>   & result, uint32_t n, bool required);
 
 
 llama_model_loader::llama_model_loader(
@@ -528,6 +531,7 @@ llama_model_loader::llama_model_loader(
         llama_load_mode load_mode,
         bool check_tensors,
         bool no_alloc,
+        bool load_mtp,
         const llama_model_kv_override * param_overrides_p,
         const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
         : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
@@ -816,6 +820,7 @@ llama_model_loader::llama_model_loader(
 
     this->check_tensors = check_tensors;
     this->no_alloc = no_alloc;
+    this->load_mtp = load_mtp;
 }
 
 std::string llama_model_loader::get_arch_name() const {

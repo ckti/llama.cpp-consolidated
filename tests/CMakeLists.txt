@@ -87,7 +87,7 @@ function(llama_build_and_test source)
     set(multiValueArgs ARGS)
     cmake_parse_arguments(LLAMA_TEST "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    set(TEST_SOURCES ${source} ${LLAMA_TEST_UNPARSED_ARGUMENTS} get-model.cpp)
+    set(TEST_SOURCES ${source} ${LLAMA_TEST_UNPARSED_ARGUMENTS})
 
     if (NOT DEFINED LLAMA_TEST_LABEL)
         set(LLAMA_TEST_LABEL "main")
@@ -148,7 +148,7 @@ if (LLAMA_LLGUIDANCE)
     llama_build_and_test(test-grammar-llguidance.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 endif ()
 
-llama_build(test-recurrent-state-rollback.cpp get-model.cpp)
+llama_build(test-recurrent-state-rollback.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
@@ -281,6 +281,10 @@ set_tests_properties(test-state-restore-fragmented PROPERTIES FIXTURES_REQUIRED 
 llama_build_and_test(test-save-load-state.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED test-download-model)
 
+if (APPLE)
+    llama_build(test-rset-release.cpp)
+endif()
+
 if (NOT GGML_BACKEND_DL)
     # these tests use the backends directly and cannot be built with dynamic loading
     llama_build_and_test(test-barrier.cpp)
@@ -321,6 +325,9 @@ endif()
 get_filename_component(TEST_TARGET test-c.c NAME_WE)
 add_executable(${TEST_TARGET} test-c.c)
 target_link_libraries(${TEST_TARGET} PRIVATE llama)
+
+# TurboQuant WHT round-trip test (links ggml turbo codec symbols via llama)
+llama_build_and_test(test-turbo-quant.c LABEL "turbo")
 
 if (NOT LLAMA_USE_SYSTEM_GGML)
     # Needs non-public ggml-impl.h

@@ -66,18 +66,18 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
 
     // On Volta the GQA optimizations aren't as impactful vs. minimizing wasted compute:
     if (cc == GGML_CUDA_CC_VOLTA) {
-        if (use_gqa_opt && gqa_ratio % 8 == 0) {
+        if (use_gqa_opt && gqa_ratio > 4) {
             ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
             return;
         }
 
-        if (use_gqa_opt && gqa_ratio % 4 == 0) {
+        if (use_gqa_opt && gqa_ratio > 2) {
             ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 4>(ctx, dst);
             return;
         }
 
         if constexpr (DKQ <= 256) {
-            if (use_gqa_opt && gqa_ratio % 2 == 0) {
+            if (use_gqa_opt && gqa_ratio > 1) {
                 ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 2>(ctx, dst);
                 return;
             }
@@ -418,6 +418,12 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+
+    // Mixed f16/bf16 + q8_0 KV cache types (default build)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_F16)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_BF16)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     // TurboQuant3 KV cache types (always enabled)
@@ -682,6 +688,32 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_MMA_F16;
     }
 
+    // TQ: RDNA4 fast path for TurboQuant cache types — prefer VEC for quantized K/V at small q-cols
+    if (amd_wmma_available(cc) && GGML_CUDA_CC_IS_RDNA4(cc) && gqa_opt_applies && Q->ne[0] <= 128 && Q->ne[0] != 40 && Q->ne[0] != 72) {
+        if (can_use_vector_kernel) {
+            if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
+                if (Q->ne[1] == 1) {
+                    if (!gqa_opt_applies) {
+                        return BEST_FATTN_KERNEL_VEC;
+                    }
+                }
+            } else {
+                if (Q->ne[1] <= 2) {
+                    return BEST_FATTN_KERNEL_VEC;
+                }
+            }
+        }
+        int gqa_ratio_eff_rdna4 = 1;
+        const int ncols2_max_rdna4 = (Q->ne[0] == 576 || Q->ne[0] == 640) ? 16 : 8;
+        while (gqa_ratio % (2*gqa_ratio_eff_rdna4) == 0 && gqa_ratio_eff_rdna4 < ncols2_max_rdna4) {
+            gqa_ratio_eff_rdna4 *= 2;
+        }
+        if (Q->ne[1] * gqa_ratio_eff_rdna4 <= 8) {
+            return BEST_FATTN_KERNEL_TILE;
+        }
+        return BEST_FATTN_KERNEL_MMA_F16;
+    }
+
     // AMD MFMA needs a certain minimum batch size to outscale the tile kernel for large head sizes.
     if ((amd_mfma_available(cc) && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72) {
         if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
@@ -719,6 +751,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_UNUSED(device);
 
 #ifdef GGML_USE_HIP
     GGML_UNUSED(device);

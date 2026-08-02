@@ -995,6 +995,9 @@ class GGUFWriter:
     def add_target_hidden_size(self, value: int) -> None:
         self.add_uint32(Keys.LLM.TARGET_HIDDEN_SIZE.format(arch=self.arch), value)
 
+    def add_decoder_arch(self, value: str) -> None:
+        self.add_string(Keys.LLM.DECODER_ARCH.format(arch=self.arch), value)
+
     def add_norm_before_residual(self, value: bool) -> None:
         self.add_bool(Keys.LLM.NORM_BEFORE_RESIDUAL.format(arch=self.arch), value)
 
@@ -1252,6 +1255,9 @@ class GGUFWriter:
 
     def add_vision_head_count_kv(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.Attention.HEAD_COUNT_KV, value)
+
+    def add_vision_head_dim(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.Attention.HEAD_DIM, value)
 
     def add_vision_attention_layernorm_eps(self, value: float) -> None:
         self.add_float32(Keys.ClipVision.Attention.LAYERNORM_EPS, value)

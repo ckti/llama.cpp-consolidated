@@ -91,7 +91,11 @@ void llama_model_glm_dsa::load_arch_tensors(llama_model_loader & ml) {
     const std::string mtp_probe = "blk." + std::to_string(n_layer) + ".nextn.eh_proj.weight";
     const bool trunk_only = (hparams.n_layer_nextn > 0) && (ml.get_weight(mtp_probe.c_str()) == nullptr);
     const int trunk_flags = mtp_only   ? TENSOR_NOT_REQUIRED : 0;
-    const int mtp_flags   = trunk_only ? TENSOR_NOT_REQUIRED : 0;
+    int mtp_flags         = trunk_only ? TENSOR_NOT_REQUIRED : 0;
+
+    if (!ml.load_mtp) {
+        mtp_flags |= TENSOR_SKIP;
+    }
 
     const bool is_mla = hparams.is_mla();
     if (!is_mla) {
@@ -323,11 +327,17 @@ llama_model_glm_dsa::graph::graph(const llama_model & model, const llm_graph_par
                 indexer_k = ggml_concat(ctx0, indexer_k_pe, indexer_k_nope, 0);
                 cb(indexer_k, "indexer_k", il);
 
-                // perform Hadamard transform on indexer q and k
-                indexer_q = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_q);
-                cb(indexer_q, "indexer_q", il);
-                indexer_k = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_k);
-                cb(indexer_k, "indexer_k", il);
+                // perform Hadamard transform on indexer q and k when the LID cache
+                // has rotation enabled (the kv-cache attn_rot override guarantees the
+                // rot tensor for DeepSeek DSA archs; GLM-DSA stores indexer K
+                // unrotated, so skip the transform to stay consistent with the
+                // write side)
+                if (inp_attn_dsa->self_k_rot_lid) {
+                    indexer_q = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_q);
+                    cb(indexer_q, "indexer_q", il);
+                    indexer_k = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_k);
+                    cb(indexer_k, "indexer_k", il);
+                }
 
                 // store indexer keys to KV cache
                 const auto * mctx_lid = inp_attn_dsa->mctx->get_lid();

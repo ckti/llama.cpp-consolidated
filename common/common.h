@@ -294,10 +294,6 @@ struct common_params_sampling {
 
     bool backend_sampling = false;
 
-    bool has_logit_bias() const {
-        return !logit_bias.empty();
-    }
-
     // print the parameters into a string
     std::string print() const;
 };
@@ -350,6 +346,12 @@ struct common_params_speculative_draft {
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+
+    bool    eagle3                = false; // use EAGLE3 speculative decoding
+    bool    dflash                = false; // use DFlash speculative decoding
+    bool    dflash_defer_injection = true;  // defer encoder KV injection to draft time (set false for higher acceptance on some models)
+    int32_t n_ctx                 = 0;     // draft context size
+
 };
 
 struct common_params_speculative_ngram_mod {
@@ -955,6 +957,9 @@ void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adap
 
 // model endpoint from env
 std::string common_get_model_endpoint();
+
+// for testing purposes
+char * common_get_model_or_exit(int, char*[]);
 
 //
 // Context utils
