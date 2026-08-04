@@ -1502,6 +1502,8 @@ static bool ggml_backend_cuda_comm_allreduce_tensor(void * comm_ctx_v, struct gg
     return comm_ctx->try_allreduce(comm_ctx, tensors);
 }
 
+ggml_backend_buffer_type_t ggml_backend_cuda_split_buffer_type(int main_device, const float * tensor_split);
+
 ggml_backend_buffer_type_t ggml_backend_cuda_split_buffer_type(int main_device, const float * tensor_split) {
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
@@ -4127,6 +4129,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         ggml_cuda_topk_moe_args args;
         const bool              can_fuse = ggml_cuda_topk_moe_fusion(cgraph, i, args);
         std::vector<ggml_op>    ops;
+        const auto append_ops = [&ops](std::initializer_list<ggml_op> new_ops) {
+            ops.reserve(ops.size() + new_ops.size());
+            for (const ggml_op op : new_ops) {
+                ops.push_back(op);
+            }
+        };
 
         if (can_fuse) {
             const ggml_tensor * logits  = node->src[0];
@@ -4140,32 +4148,30 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 int out_nodes[2];  // nodes which can't be elided
 
                 if (args.sigmoid) {
-                    ops.insert(ops.end(), { GGML_OP_UNARY });
+                    append_ops({ GGML_OP_UNARY });
                 } else if (args.sqrt_softplus) {
-                    ops.insert(ops.end(), { GGML_OP_UNARY, GGML_OP_SQRT });
+                    append_ops({ GGML_OP_UNARY, GGML_OP_SQRT });
                 } else {
-                    ops.insert(ops.end(), { GGML_OP_SOFT_MAX });
+                    append_ops({ GGML_OP_SOFT_MAX });
                 }
                 const int i_probs = i + (int) ops.size() - 1;  // last node of the gating activation
 
                 if (args.prob_bias) {
                     bias = cgraph->nodes[i_probs + 2]->src[1];
-                    ops.insert(ops.end(), { GGML_OP_RESHAPE, GGML_OP_ADD, GGML_OP_ARGSORT, GGML_OP_VIEW,
-                                            GGML_OP_GET_ROWS });
+                    append_ops({ GGML_OP_RESHAPE, GGML_OP_ADD, GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS });
                     out_nodes[0] = i_probs + 4;
                 } else {
-                    ops.insert(ops.end(), { GGML_OP_RESHAPE, GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS });
+                    append_ops({ GGML_OP_RESHAPE, GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS });
                     out_nodes[0] = i_probs + 3;
                 }
                 ids = cgraph->nodes[out_nodes[0]];
 
                 if (args.norm) {
-                    ops.insert(ops.end(),
-                               { GGML_OP_RESHAPE, GGML_OP_SUM_ROWS, GGML_OP_CLAMP, GGML_OP_DIV, GGML_OP_RESHAPE });
+                    append_ops({ GGML_OP_RESHAPE, GGML_OP_SUM_ROWS, GGML_OP_CLAMP, GGML_OP_DIV, GGML_OP_RESHAPE });
                     clamp = cgraph->nodes[i + ops.size() - 3];
                 }
                 if (args.scale) {
-                    ops.insert(ops.end(), { GGML_OP_SCALE });
+                    append_ops({ GGML_OP_SCALE });
                     scale = cgraph->nodes[i + ops.size() - 1];
                 }
 
@@ -4180,8 +4186,8 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 }
             } else if (!args.norm && !args.prob_bias) {
                 //special case gpt-oss, no norm, no bias.
-                ops.insert(ops.end(), { GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS, GGML_OP_RESHAPE,
-                                        GGML_OP_SOFT_MAX, GGML_OP_RESHAPE });
+                append_ops({ GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS, GGML_OP_RESHAPE, GGML_OP_SOFT_MAX,
+                             GGML_OP_RESHAPE });
                 weights                     = cgraph->nodes[i + 5];
                 ids                         = cgraph->nodes[i + 1];
                 const ggml_tensor * softmax = cgraph->nodes[i + 4];
