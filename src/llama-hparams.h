@@ -230,7 +230,7 @@ struct llama_hparams {
     // MSA
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;
-    // MSA stores its indexer keys in the main KV cache (k_idx tensors);
+    // MSA stores its indexer keys in the main KV cache.
     bool indexer_kv = false;
 
     // Indexer is "full" (1) or "shared" (0)

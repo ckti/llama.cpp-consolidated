@@ -185,14 +185,15 @@ static __global__ void ggml_cuda_ar_kernel(
             for (int k = 0; k < ELEMS_PER_VEC; ++k) {
                 const T_wire d_low = ggml_cuda_cast<T_wire>(sendbuf[off + k]);
                 recvbuf[off + k] = ggml_cuda_cast<T_dst>(
-                    ggml_cuda_cast<float>(d_low) + ggml_cuda_cast<float>(wire[k]));
+                    ggml_cuda_cast<float, T_wire>(d_low) +
+                    ggml_cuda_cast<float, T_wire>(wire[k]));
             }
         }
         if (bid == 0 && tid < count - tail) {
             const T_wire d_low = ggml_cuda_cast<T_wire>(sendbuf[tail + tid]);
             recvbuf[tail + tid] = ggml_cuda_cast<T_dst>(
-                ggml_cuda_cast<float>(d_low) +
-                ggml_cuda_cast<float>(host_other[tail + tid]));
+                ggml_cuda_cast<float, T_wire>(d_low) +
+                ggml_cuda_cast<float, T_wire>(host_other[tail + tid]));
         }
     }
 }
@@ -213,7 +214,8 @@ static __global__ void ggml_cuda_ar_add_kernel(
     for (int i = tid; i < count; i += nt) {
         const T_src d_low = ggml_cuda_cast<T_src>(dst[i]);
         dst[i] = ggml_cuda_cast<T_dst>(
-            ggml_cuda_cast<float>(d_low) + ggml_cuda_cast<float>(src[i]));
+            ggml_cuda_cast<float, T_src>(d_low) +
+            ggml_cuda_cast<float, T_src>(src[i]));
     }
 }
 
