@@ -105,7 +105,6 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
                                     (ncols == 1 && D <= 512 && type_K == GGML_TYPE_TURBO2_0) ? 4 : 0;
     constexpr int lut_stride = n_centroids_lut > 0 ? n_centroids_lut + 1 : 1; // +1 avoids bank conflicts
 
-    constexpr int nthreads    = ggml_sycl_fattn_vec_get_nthreads_device();
     constexpr int nthreads_KQ = K_is_turbo ? 1
                               : (type_K == GGML_TYPE_F16 ? 128 / cpy_nb : nthreads_KQ_q);
 #ifdef GGML_SYCL_F16

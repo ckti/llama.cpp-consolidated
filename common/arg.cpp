@@ -25,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <cinttypes>
 #include <climits>
 #include <cmath>
@@ -368,7 +369,10 @@ common_models_handler common_models_handler_init(const common_params & params, l
 
     const bool spec_type_draft_mtp = std::find(params.speculative.types.begin(),
                                         params.speculative.types.end(),
-                                        COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+                                        COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end() ||
+                                     std::find(params.speculative.types.begin(),
+                                        params.speculative.types.end(),
+                                        COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE) != params.speculative.types.end();
 
     const bool spec_type_draft_dflash = std::find(params.speculative.types.begin(),
                                            params.speculative.types.end(),
@@ -890,6 +894,11 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // parse the first time to get -hf option (used for remote preset)
     parse_cli_args();
 
+    if (params.moe_cache.mode == COMMON_MOE_CACHE_MODE_ON && !params.no_extra_bufts) {
+        LOG_INF("explicit MoE cache mode disables weight repacking\n");
+        params.no_extra_bufts = true;
+    }
+
     postprocess_cpu_params(params.cpuparams,       nullptr);
     postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
 
@@ -1305,6 +1314,12 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
             common_params_print_completion(ctx_arg);
             exit(0);
         }
+
+        const bool adaptive_mtp = std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE) != params.speculative.types.end();
+        if (adaptive_mtp && (params.speculative.draft.n_min_adaptive < 1 || params.speculative.draft.n_min_adaptive > params.speculative.draft.n_max)) {
+            throw std::invalid_argument("error: --spec-draft-n-min-adaptive must be in [1, --spec-draft-n-max]");
+        }
+
         params.lr.init();
     } catch (const std::invalid_argument & ex) {
         fprintf(stderr, "%s\n", ex.what());
@@ -2790,6 +2805,41 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_env("LLAMA_ARG_N_CPU_MOE"));
+    add_opt(common_arg(
+        {"--moe-cache"}, "MODE",
+        "adaptively cache the hottest CPU-resident MoE experts in spare VRAM "
+        "(default: auto; auto = preserve weight repacking; on = automatic budget without weight repacking; "
+        "soft = try spare VRAM first, evict experts only as needed; "
+        "off/0 = disabled; N = VRAM budget in MiB per device without weight repacking)",
+        [](common_params & params, const std::string & value) {
+            params.moe_cache.mode_explicit = true;
+            params.moe_cache.fit_selected = false;
+
+            if (value == "off" || value == "0") {
+                params.moe_cache.mode       = COMMON_MOE_CACHE_MODE_OFF;
+                params.moe_cache.budget_mib = 0;
+            } else if (value == "auto") {
+                params.moe_cache.mode       = COMMON_MOE_CACHE_MODE_AUTO;
+                params.moe_cache.budget_mib = 0;
+            } else if (value == "soft") {
+                params.moe_cache.mode       = COMMON_MOE_CACHE_MODE_SOFT;
+                params.moe_cache.budget_mib = 0;
+            } else if (value == "on") {
+                params.moe_cache.mode       = COMMON_MOE_CACHE_MODE_ON;
+                params.moe_cache.budget_mib = 0;
+            } else {
+                char * end = nullptr;
+                errno = 0;
+                const long long budget_mb = strtoll(value.c_str(), &end, 10);
+                if (errno != 0 || end == value.c_str() || *end != '\0' ||
+                    budget_mb <= 0 || budget_mb > 1024 * 1024) {
+                    throw std::invalid_argument("expected auto, on, off, 0, or a positive MiB budget");
+                }
+                params.moe_cache.mode       = COMMON_MOE_CACHE_MODE_ON;
+                params.moe_cache.budget_mib = (size_t)budget_mb;
+            }
+        }
+    ).set_env("LLAMA_ARG_MOE_CACHE"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
@@ -2843,7 +2893,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             const std::regex regex{ R"([,/]+)" };
             std::sregex_token_iterator it{ arg_next.begin(), arg_next.end(), regex, -1 };
             std::vector<std::string> split_arg{ it, {} };
-            if (split_arg.size() >= llama_max_devices()) {
+            if (split_arg.size() > llama_max_devices()) {
                 throw std::invalid_argument(
                     string_format("got %zu input configs, but system only has %zu devices", split_arg.size(), llama_max_devices())
                 );
@@ -2909,7 +2959,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             const std::regex regex{ R"([,/]+)" };
             std::sregex_token_iterator it{ arg_next.begin(), arg_next.end(), regex, -1 };
             std::vector<std::string> split_arg{ it, {} };
-            if (split_arg.size() >= llama_max_devices()) {
+            if (split_arg.size() > llama_max_devices()) {
                 throw std::invalid_argument(
                     string_format("got %zu input configs, but system only has %zu devices", split_arg.size(), llama_max_devices())
                 );
@@ -4151,6 +4201,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.n_min = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MIN"));
+
+    add_opt(common_arg(
+        {"--spec-draft-n-min-adaptive"}, "N",
+        string_format("minimum adaptive MTP draft depth; the depth starts here and never drops below it (default: %d)", params.speculative.draft.n_min_adaptive),
+        [](common_params & params, int value) {
+            params.speculative.draft.n_min_adaptive = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MIN_ADAPTIVE"));
+
+    add_opt(common_arg(
+        {"--spec-chain"}, "0|1|N",
+        "chained MTP drafting: all draft tokens in one GPU decode (default: off). Use --spec-chain N to enable and set depth (e.g. --spec-chain 8).",
+        [](common_params & params, const std::string & value) {
+            if (is_truthy(value)) {
+                params.speculative.draft.chain = true;
+            } else if (is_falsey(value)) {
+                params.speculative.draft.chain = false;
+            } else {
+                int n = std::stoi(value);
+                if (n < 1) throw std::invalid_argument("spec-chain depth must be >= 1");
+                params.speculative.draft.chain = true;
+                params.speculative.draft.n_max = n;
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_CHAIN"));
 
     add_opt(common_arg(
         {"--spec-draft-p-split", "--draft-p-split"}, "P",

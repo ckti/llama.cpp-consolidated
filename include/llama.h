@@ -221,6 +221,13 @@ extern "C" {
         LLAMA_CONTEXT_TYPE_MTP     = 1,
     };
 
+    enum llama_moe_cache_mode {
+        LLAMA_MOE_CACHE_MODE_UNSPECIFIED = -1,
+        LLAMA_MOE_CACHE_MODE_OFF = 0,
+        LLAMA_MOE_CACHE_MODE_AUTO = 1,
+        LLAMA_MOE_CACHE_MODE_ON = 2,
+    };
+
     // TODO: simplify (https://github.com/ggml-org/llama.cpp/pull/9294#pullrequestreview-2286561979)
     typedef struct llama_token_data {
         llama_token id; // token id
@@ -582,6 +589,19 @@ extern "C" {
     LLAMA_API const struct llama_model * llama_get_model   (const struct llama_context * ctx);
     LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context * ctx);
     LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context * ctx); // TODO: rename to llama_get_pooling_type
+
+    // Return the *effective* K/V cache tensor type currently used by the context's memory.
+    // This can differ from the type_k/type_v requested via llama_context_params: some memory
+    // implementations silently rewrite the requested type at construction time (e.g. TurboQuant
+    // "auto-asymmetric" upgrades K to q8_0 for models with GQA ratio >= 6 when a symmetric turbo
+    // K+V cache was requested, to avoid catastrophic quality loss - see llama_kv_cache's ctor and
+    // its "auto-asymmetric" LLAMA_LOG_WARN).
+    //
+    // Returns GGML_TYPE_COUNT if ctx is NULL, if the memory has no K/V cache at all (e.g. pure
+    // recurrent/Mamba-style memory), or if the memory is a composite of multiple sub-caches that
+    // can legitimately hold different effective types (e.g. DSV4's raw/CSA/HCA/indexer caches).
+    LLAMA_API enum ggml_type llama_get_kv_cache_type_k(const struct llama_context * ctx);
+    LLAMA_API enum ggml_type llama_get_kv_cache_type_v(const struct llama_context * ctx);
 
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);

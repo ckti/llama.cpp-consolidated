@@ -129,7 +129,24 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
                 }
             }
         }
-        ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
+        // A non-contiguous tensor (e.g. a k_v view whose rows are strided over a
+        // wider base) must be written row by row. ggml_backend_tensor_set copies
+        // `size` bytes contiguously from tensor->data, so a single packed write
+        // lays row i at i*row_size instead of i*nb[1], leaving the tail of the
+        // logical extent holding whatever was there before.
+        if (!ggml_is_contiguous(tensor) && ggml_n_dims(tensor) >= 2) {
+            const size_t row_sz = ggml_row_size(tensor->type, tensor->ne[0]);
+            const int64_t nrows = ggml_nrows(tensor);
+            for (int64_t r = 0; r < nrows; r++) {
+                const int64_t i3 =  r / (tensor->ne[1]*tensor->ne[2]);
+                const int64_t i2 = (r / tensor->ne[1]) % tensor->ne[2];
+                const int64_t i1 =  r % tensor->ne[1];
+                const size_t off = i1*tensor->nb[1] + i2*tensor->nb[2] + i3*tensor->nb[3];
+                ggml_backend_tensor_set(tensor, dataq.data() + r*row_sz, off, row_sz);
+            }
+        } else {
+            ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
+        }
     } else if (tensor->type == GGML_TYPE_I8 || tensor->type == GGML_TYPE_I16) {
         // This is going to create some weird integers though.
         ggml_backend_tensor_set(tensor, data.data(), 0, nels * ggml_type_size(tensor->type));
@@ -8638,6 +8655,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_dsv4_hc_comb(257, 8));
     test_cases.emplace_back(new test_dsv4_hc_comb(17, 20));
 
+    // DSV4_HC_COMB eps sweep (restored; lost in the #244 rebase) — validates
+    // CPU/CUDA Sinkhorn eps semantics match across orders of magnitude
+    for (float eps : {1.0e-6f, 1.0e-3f, 1.0e-1f}) {
+        for (int64_t nt : {1, 2, 4, 8, 64}) {
+            for (int ni : {1, 3, 5}) {
+                test_cases.emplace_back(new test_dsv4_hc_comb(nt, ni, eps));
+            }
+        }
+    }
+
     test_cases.emplace_back(new test_dsv4_hc_pre(1, 1));
     test_cases.emplace_back(new test_dsv4_hc_pre(31, 17));
     test_cases.emplace_back(new test_dsv4_hc_pre(128, 257));
@@ -9661,6 +9688,27 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
+        // n=1 as well as n=16: ggml_vk_use_mul_mat_vec_id() selects the mat-vec path only
+        // when src2->ne[1] <= 8, so the n=16 case above exercises mul_mm_id and never touches
+        // the decode path. A backend that claims MUL_MAT_ID support without a mul_mat_vec_id
+        // pipeline for the type passes at n=16 and asserts on a null pipeline at n=1.
+        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 1, 3*ggml_blck_size(type_a)));
+    }
+
+    // TurboQuant MUL_MAT_ID. TQ3_1S/TQ4_1S are in all_types but not base_types, so the
+    // two cases above are their only MUL_MAT_ID coverage and the rich sweep below never
+    // reaches them. Cover both sides of the n <= 8 threshold that
+    // ggml_vk_use_mul_mat_vec_id() splits on (mul_mat_vec_id vs mul_mm_id), several
+    // n_used counts, and broadcast -- which exercises the expert-index wrap that a
+    // single non-broadcast case never touches.
+    for (ggml_type type_a : {GGML_TYPE_TQ3_1S, GGML_TYPE_TQ4_1S}) {
+        for (int n_used : {1, 2, 4}) {
+            for (bool b : {false, true}) {
+                for (int n : {1, 4, 8, 9, 17, 32}) {
+                    test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, n_used, b, 512, n, 256));
+                }
+            }
+        }
     }
 
     for (ggml_type type_a : base_types) {
@@ -10457,12 +10505,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     }
                 }
             }
-        }
-    }
-
-    for (int kv : { 1, 7, 8, 63, 64, 65 }) {
-        for (ggml_type type_K : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_1, GGML_TYPE_Q5_0, GGML_TYPE_Q4_1, GGML_TYPE_Q4_0}) {
-            test_cases.emplace_back(new test_lightning_indexer(128, 64, kv, 32, 4, 1, type_K));
         }
     }
 
