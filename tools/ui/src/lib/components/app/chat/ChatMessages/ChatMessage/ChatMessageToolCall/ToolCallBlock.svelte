@@ -102,6 +102,7 @@
 	// signals activity; only terminal states get a pill.
 	function subtitleFor(errorMessage?: string): string | undefined {
 		if (showSpinner) return undefined;
+
 		if (errorMessage) return 'failed';
 
 		if (isStreamingCall && !isStreaming) return 'incomplete';

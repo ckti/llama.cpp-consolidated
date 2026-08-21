@@ -4,9 +4,7 @@
 	import { page } from '$app/state';
 	import { DialogModelNotAvailable } from '$lib/components/app';
 	import { APP_NAME, ROUTES, URL_PARAMS } from '$lib/constants';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { conversationsStore, activeConversation } from '$lib/stores/conversations.svelte';
-	import { modelsStore, modelOptions } from '$lib/stores/models.svelte';
+	import { chatStore, conversationsStore, modelsStore } from '$lib/stores';
 
 	let chatId = $derived(page.params.id);
 	let currentChatId: string | undefined = undefined;
@@ -28,6 +26,7 @@
 	 */
 	function clearUrlParams() {
 		const url = new URL(page.url);
+
 		url.searchParams.delete(URL_PARAMS.QUERY);
 		url.searchParams.delete(URL_PARAMS.MODEL);
 		replaceState(url.toString(), {});

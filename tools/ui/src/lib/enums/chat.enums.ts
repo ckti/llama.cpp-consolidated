@@ -99,14 +99,3 @@ export enum ChatFormInputRichTokenKind {
 	CODE_INLINE = 'code_inline',
 	TEXT = 'text'
 }
-
-export enum ChatFormCommandAction {
-	PROMPT = 'prompt',
-	CWD = 'cwd',
-	MODEL = 'model'
-}
-
-export enum FileMentionEntryType {
-	FILE = 'file',
-	DIRECTORY = 'directory'
-}

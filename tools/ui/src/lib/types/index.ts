@@ -64,7 +64,9 @@ export type {
 	AttachmentDisplayItemsOptions,
 	FileProcessingResult,
 	FileMentionEntry,
-	ChatFormCommand
+	ChatFormCommand,
+	ChatCommandsOptions,
+	ControlAction
 } from './chat.d';
 
 // Database types

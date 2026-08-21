@@ -93,7 +93,7 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader & ml) {
 
     // reduced draft vocab (optional): d2t maps draft rows to target token ids
     int64_t n_vocab_draft = n_vocab;
-    const struct ggml_tensor * d2t_meta = ml->get_tensor_meta("d2t");
+    const struct ggml_tensor * d2t_meta = ml.get_tensor_meta("d2t");
     if (d2t_meta) {
         n_vocab_draft = d2t_meta->ne[0];
         d2t = create_tensor(tn(LLM_TENSOR_D2T), { n_vocab_draft }, 0);

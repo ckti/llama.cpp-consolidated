@@ -671,47 +671,7 @@ export class DatabaseService {
 			if (visited.has(newParent)) {
 				newParent = undefined;
 
-				const newConvId = uuid();
-				const clonedMessages: DatabaseMessage[] = pathMessages.map((msg) => {
-					const newId = idMap.get(msg.id)!;
-					const newParent = msg.parent ? (idMap.get(msg.parent) ?? null) : null;
-					const newChildren = msg.children
-						.filter((childId: string) => idMap.has(childId))
-						.map((childId: string) => idMap.get(childId)!);
-
-					return {
-						...msg,
-						id: newId,
-						convId: newConvId,
-						parent: newParent,
-						children: newChildren,
-						extra: options.includeAttachments ? msg.extra : undefined
-					};
-				});
-
-				const lastClonedMessage = clonedMessages[clonedMessages.length - 1];
-				const newConv: DatabaseConversation = {
-					id: newConvId,
-					name: options.name,
-					lastModified: Date.now(),
-					currNode: lastClonedMessage.id,
-					forkedFromConversationId: sourceConvId,
-					mcpServerOverrides: sourceConv.mcpServerOverrides
-						? sourceConv.mcpServerOverrides.map((o: McpServerOverride) => ({
-								serverId: o.serverId,
-								enabled: o.enabled
-							}))
-						: undefined,
-					cwd: sourceConv.cwd
-				};
-
-				await db[IDXDB_TABLES.conversations].add(newConv);
-
-				for (const msg of clonedMessages) {
-					await db[IDXDB_TABLES.messages].add(msg);
-				}
-
-				return newConv;
+				break;
 			}
 
 			visited.add(newParent);

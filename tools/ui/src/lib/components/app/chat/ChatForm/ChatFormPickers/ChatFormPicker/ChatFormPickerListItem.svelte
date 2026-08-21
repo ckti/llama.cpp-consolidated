@@ -13,19 +13,19 @@
 	}
 
 	let {
+		children,
 		class: className = '',
-		isSelected = false,
-		disabled = false,
-		onclick,
-		onmouseenter,
 		dataIndex,
-		children
+		disabled = false,
+		isSelected = false,
+		onclick,
+		onmouseenter
 	}: Props = $props();
 </script>
 
 <button
 	type="button"
-	data-picker-index={dataIndex}
+	{...{ [UI_DATA_ATTRS.PICKER_INDEX]: dataIndex }}
 	{disabled}
 	{onclick}
 	{onmouseenter}

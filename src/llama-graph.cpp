@@ -9,6 +9,7 @@
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-kv-cache-dsa.h"
+#include "llama-kv-cache-dsa-iswa.h"
 #include "llama-kv-cache-msa.h"
 #include "llama-kv-cache-dsv4.h"
 #include "llama-memory-hybrid.h"
@@ -657,8 +658,97 @@ bool llm_graph_input_attn_k_dsa::can_reuse_impl(const llm_graph_params & params)
     return res;
 }
 
+void llm_graph_input_attn_k_dsa_iswa::set_input(const llama_ubatch * ubatch) {
+    inp_dsa->set_input(ubatch);
+    inp_swa->set_input(ubatch);
+}
+
+bool llm_graph_input_attn_k_dsa_iswa::can_reuse(const llm_graph_params & params) {
+    mctx = static_cast<const llama_kv_cache_dsa_iswa_context *>(params.mctx);
+    inp_dsa->mctx = mctx->get_dsa();
+    inp_swa->mctx = mctx->get_swa();
+    return inp_dsa->can_reuse_impl(params) && inp_swa->can_reuse_impl(params);
+}
+
 
 // dsv4 helpers
+
+static ggml_tensor * dsv4_build_raw_kq_mask(
+        ggml_context * ctx,
+        const llama_kv_cache_dsv4_raw_context * mctx,
+        const llama_ubatch & ubatch,
+        const llama_cparams & cparams,
+        int64_t n_stream) {
+    const int64_t n_kv = mctx->get_n_kv();
+    GGML_ASSERT(n_stream > 0 && ubatch.n_tokens % n_stream == 0);
+    ggml_tensor * res = ggml_new_tensor_4d(ctx,
+        cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32,
+        n_kv, ubatch.n_tokens / n_stream, 1, n_stream);
+    ggml_set_input(res);
+    ggml_set_name(res, "attn_inp_kq_mask");
+    return res;
+}
+
+static ggml_tensor * dsv4_build_input_1d(ggml_context * ctx, ggml_type type, size_t n, const char * name) {
+    if (n == 0) {
+        return nullptr;
+    }
+    ggml_tensor * res = ggml_new_tensor_1d(ctx, type, (int64_t) n);
+    ggml_set_input(res);
+    ggml_set_name(res, name);
+    return res;
+}
+
+static void dsv4_build_comp_inputs(
+        ggml_context * ctx,
+        llm_graph_input_dsv4::comp_input & inp,
+        const llama_kv_cache_dsv4_context::comp_plan & plan,
+        const char * name,
+        const llama_cparams & cparams,
+        int64_t n_stream) {
+    const std::string prefix = std::string("dsv4_") + name + "_";
+    inp.state_pos = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_pos.size(), (prefix + "state_pos").c_str());
+    inp.state_persist_src_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_persist_src_idxs.size(), (prefix + "state_persist_src_idxs").c_str());
+    inp.state_persist_dst_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_persist_dst_idxs.size(), (prefix + "state_persist_dst_idxs").c_str());
+    inp.state_restore_src_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_restore_src_idxs.size(), (prefix + "state_restore_src_idxs").c_str());
+    inp.state_restore_dst_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_restore_dst_idxs.size(), (prefix + "state_restore_dst_idxs").c_str());
+    inp.state_snapshot_src_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_snapshot_src_idxs.size(), (prefix + "state_snapshot_src_idxs").c_str());
+    inp.state_snapshot_dst_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_snapshot_dst_idxs.size(), (prefix + "state_snapshot_dst_idxs").c_str());
+    inp.state_read_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_read_idxs.size(), (prefix + "state_read_idxs").c_str());
+    inp.state_write_idxs = dsv4_build_input_1d(ctx, GGML_TYPE_I64, plan.state_write_idxs.size(), (prefix + "state_write_idxs").c_str());
+    inp.state_write_pos = dsv4_build_input_1d(ctx, GGML_TYPE_I32, plan.state_write_pos.size(), (prefix + "state_write_pos").c_str());
+
+    if (plan.n_kv > 0) {
+        GGML_ASSERT(n_stream > 0 && plan.n_visible.size() % n_stream == 0);
+        inp.kq_mask = ggml_new_tensor_4d(ctx,
+            cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32,
+            plan.n_kv, plan.n_visible.size() / n_stream, 1, n_stream);
+        ggml_set_input(inp.kq_mask);
+        ggml_set_name(inp.kq_mask, (prefix + "kq_mask").c_str());
+    }
+}
+
+void llm_graph_input_dsv4_raw::set_input(const llama_ubatch * ubatch) {
+    if (self_k_idxs && self_k_idxs->buffer) {
+        mctx->set_input_k_idxs(self_k_idxs);
+    }
+    if (self_kq_mask && self_kq_mask->buffer) {
+        mctx->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);
+    }
+    if (self_k_rot && self_k_rot->buffer) {
+        mctx->set_input_k_rot(self_k_rot);
+    }
+}
+
+void llm_graph_input_dsv4::set_input(const llama_ubatch * ubatch) {
+    inp_raw->set_input(ubatch);
+}
+
+bool llm_graph_input_dsv4::can_reuse(const llm_graph_params & params) {
+    this->mctx = static_cast<const llama_kv_cache_dsv4_context *>(params.mctx);
+    inp_raw->mctx = mctx->get_raw();
+    return false;
+}
 
 
 void llm_graph_input_attn_kv_iswa::set_input(const llama_ubatch * ubatch) {
@@ -1153,7 +1243,7 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
     if (t_h_capture != nullptr) {
         ggml_set_output(t_h_capture);
     }
-    for (auto & [seq_id, t] : t_sampled) {
+    for (auto * t : t_sampled) {
         if (t != nullptr) {
             ggml_set_output(t);
         }
@@ -3202,6 +3292,17 @@ llm_graph_input_attn_k_dsa * llm_graph_context::build_attn_inp_k_dsa() const {
     auto inp = build_attn_inp_k_dsa_impl(ctx0, ubatch, hparams, cparams, mctx_cur);
 
     return (llm_graph_input_attn_k_dsa *) res->add_input(std::move(inp));
+}
+
+llm_graph_input_attn_k_dsa_iswa * llm_graph_context::build_attn_inp_k_dsa_iswa() const {
+    const auto * mctx_cur = static_cast<const llama_kv_cache_dsa_iswa_context *>(mctx);
+    auto inp_dsa = build_attn_inp_k_dsa_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_dsa());
+    auto inp_swa = std::make_unique<llm_graph_input_attn_k>(hparams, cparams, mctx_cur->get_swa());
+    inp_swa->self_k_idxs = mctx_cur->get_swa()->build_input_k_idxs(ctx0, ubatch);
+    inp_swa->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur->get_swa(), ubatch, cparams);
+    inp_swa->self_kq_mask_cnv = inp_swa->self_kq_mask;
+    auto inp = std::make_unique<llm_graph_input_attn_k_dsa_iswa>(std::move(inp_dsa), std::move(inp_swa), mctx_cur);
+    return (llm_graph_input_attn_k_dsa_iswa *) res->add_input(std::move(inp));
 }
 
 llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled) const {

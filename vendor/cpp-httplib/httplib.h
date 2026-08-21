@@ -8,8 +8,8 @@
 #ifndef CPPHTTPLIB_HTTPLIB_H
 #define CPPHTTPLIB_HTTPLIB_H
 
-#define CPPHTTPLIB_VERSION "0.52.0"
-#define CPPHTTPLIB_VERSION_NUM "0x003400"
+#define CPPHTTPLIB_VERSION "0.53.1"
+#define CPPHTTPLIB_VERSION_NUM "0x003501"
 
 #ifdef _WIN32
 #if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0A00
@@ -1826,6 +1826,7 @@ enum class Error {
   HTTPParsing,
   InvalidRangeHeader,
   UnsupportedContentEncoding,
+  WebSocketHandshake,
 
   // For internal use only
   SSLPeerCouldBeClosed_,
@@ -4386,7 +4387,8 @@ public:
 
 private:
   void shutdown_and_close();
-  bool create_stream(std::unique_ptr<Stream> &strm);
+  bool create_stream(std::unique_ptr<Stream> &strm, Error &error,
+                     int &ssl_error, uint64_t &ssl_backend_error);
   void prepare_default_headers(Request &req);
 
   std::string host_;

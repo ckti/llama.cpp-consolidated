@@ -1,8 +1,4 @@
 <script lang="ts">
-	import { XCircle } from '@lucide/svelte';
-	import { MAX_HEIGHT_CODE_BLOCK, RESULT_STAT_SEPARATOR } from '$lib/constants';
-	import { computeLineDiff, prefixFor, abbreviateHome, type AgenticSection } from '$lib/utils';
-	import { toolsStore } from '$lib/stores/tools.svelte';
 	import { parseEditFileMeta } from './parsers/edit-file';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 	import { XCircle } from '@lucide/svelte';

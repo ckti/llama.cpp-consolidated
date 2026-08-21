@@ -45,38 +45,9 @@ export default defineConfig(({ mode }) => {
 			relativizeBasePlugin()
 		],
 
-	test: {
-		projects: [
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'client',
-					browser: browserBaseConfig,
-					include: ['tests/client/**/*.svelte.{test,spec}.{js,ts}'],
-					setupFiles: ['./vitest-setup-client.ts']
-				}
-			},
-
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'unit',
-					environment: 'node',
-					include: ['tests/unit/**/*.{test,spec}.{js,ts}']
-				}
-			},
-
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'ui',
-					browser: { ...browserBaseConfig, instances: [{ browser: 'chromium', headless: true }] }
-				},
-				plugins: [
-					storybookTest({
-						storybookScript: 'pnpm run storybook --no-open'
-					})
-				]
+		resolve: {
+			alias: {
+				'katex-fonts': resolve('node_modules/katex/dist/fonts')
 			}
 		},
 

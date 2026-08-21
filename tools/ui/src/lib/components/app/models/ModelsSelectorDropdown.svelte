@@ -1,12 +1,7 @@
 <script lang="ts">
+	import ModelLoadHighlight from './ModelLoadHighlight.svelte';
+	import type { ModelItem } from './utils';
 	import { ChevronDown, Loader2 } from '@lucide/svelte';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { KeyboardKey, ServerModelStatus } from '$lib/enums';
-	import { MODEL_SELECTOR_ICON } from '$lib/constants';
-	import { useModelsSelector } from '$lib/hooks/use-models-selector.svelte';
-	import { modelsStore, routerModels } from '$lib/stores/models.svelte';
-	import { modelLoadFraction } from '$lib/utils';
 	import {
 		DialogModelInformation,
 		DropdownMenuSearchable,
@@ -49,7 +44,8 @@
 		onOpenChange: (open) => {
 			isOpen = open;
 			highlightedId = null;
-		}
+		},
+		useGlobalSelection: () => useGlobalSelection
 	});
 
 	$effect(() => {
@@ -89,12 +85,15 @@
 
 	function moveHighlight(direction: 1 | -1) {
 		const len = visualOrder.length;
+
 		if (len === 0) {
 			highlightedId = null;
+
 			return;
 		}
 
 		let index = highlightedIndex;
+
 		if (index === -1) {
 			index = direction === 1 ? 0 : len - 1;
 		} else {
@@ -108,15 +107,16 @@
 	async function handleModelKeyAction(modelId: string, unload: boolean) {
 		if (!unload) {
 			void ms.handleSelect(modelId);
+
 			return;
 		}
 
-		const model = routerModels().find((m) => m.id === modelId);
+		const model = modelsStore.routerModels.find((m) => m.id === modelId);
 		const status = model?.status?.value as ServerModelStatus | undefined;
 
 		if (status === ServerModelStatus.LOADING) return;
 
-		await modelsStore.unloadModel(modelId);
+		await modelsStore.status.unload(modelId);
 	}
 
 	export function open() {

@@ -1,5 +1,10 @@
 import { parseToolArgs } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/_shared';
-import { lastPathSegment, abbreviateHome, formatCwdMessage, parseCwdMessage } from '$lib/utils';
+import { parseEditFileMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/edit-file';
+import { parseExecShellCommandMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/exec-shell-command';
+import { parseFileGlobSearchMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/file-glob-search';
+import { parseGrepSearchMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/grep-search';
+import { parseReadFileMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/read-file';
+import { parseRunJavascriptMeta } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/run-javascript';
 import {
 	parseWriteFileMeta,
 	type WriteFileMeta
@@ -86,6 +91,7 @@ describe('formatCwdMessage / parseCwdMessage', () => {
 
 	it('round-trips through the parser', () => {
 		const info = parseCwdMessage(formatCwdMessage('/Users/al/Documents', '/Users/al'));
+
 		expect(info?.path).toBe('/Users/al/Documents');
 		expect(info?.display).toBe('~/Documents');
 	});
@@ -95,11 +101,11 @@ describe('formatCwdMessage / parseCwdMessage', () => {
 			parseCwdMessage(
 				'Set working directory to [file:///a/b](~/b). Tool calls run with this as their working directory.'
 			)
-		).toEqual({ path: '/a/b', display: '~/b' });
+		).toEqual({ display: '~/b', path: '/a/b' });
 	});
 
 	it('parses the cleared marker', () => {
-		expect(parseCwdMessage('Working directory cleared')).toEqual({ path: null, display: '' });
+		expect(parseCwdMessage('Working directory cleared')).toEqual({ display: '', path: null });
 	});
 
 	it('returns null for non-cwd content', () => {

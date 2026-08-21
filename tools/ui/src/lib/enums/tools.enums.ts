@@ -22,13 +22,13 @@ export enum ToolResponseField {
  * Mirrors the server-side validation in server-tools.cpp.
  */
 export enum GlobSearchType {
-	FILE = 'file',
+	ALL = 'all',
 	DIR = 'dir',
-	ALL = 'all'
+	FILE = 'file'
 }
 
 /**
- * Wire-format identifiers for built-in and frontend tools. The string
+ * Wire-format identifiers for server and browser tools. The string
  * value matches what the model emits in tool call names, so comparing
  * against `BuiltInTool.SERVER_READ_FILE` is equivalent to comparing
  * against the raw `'read_file'` literal - the enum just keeps the two in
@@ -42,13 +42,14 @@ export enum GlobSearchType {
  * the UI while keeping a single wire name.
  */
 export enum BuiltInTool {
-	READ_FILE = 'read_file',
-	EDIT_FILE = 'edit_file',
-	WRITE_FILE = 'write_file',
-	GET_DATETIME = 'get_datetime',
-	GET_INFO = 'get_info',
-	FILE_GLOB_SEARCH = 'file_glob_search',
-	GREP_SEARCH = 'grep_search',
-	EXEC_SHELL_COMMAND = 'exec_shell_command',
-	RUN_JAVASCRIPT = 'run_javascript'
+	BROWSER_GET_DATETIME = 'get_datetime',
+	BROWSER_READ_MEDIA = 'read_media',
+	BROWSER_RUN_JAVASCRIPT = 'run_javascript',
+	SERVER_EDIT_FILE = 'edit_file',
+	SERVER_EXEC_SHELL_COMMAND = 'exec_shell_command',
+	SERVER_FILE_GLOB_SEARCH = 'file_glob_search',
+	SERVER_GET_INFO = 'get_info',
+	SERVER_GREP_SEARCH = 'grep_search',
+	SERVER_READ_FILE = 'read_file',
+	SERVER_WRITE_FILE = 'write_file'
 }

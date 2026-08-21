@@ -16,16 +16,13 @@
 	import type { AgenticSection, DatabaseMessageExtra, ToolResultLine } from '$lib/types';
 	import {
 		abbreviateHome,
+		type ExecShellExitStatus,
 		highlightCode,
 		isExitCodeSummaryLine,
 		parseExecShellCommandError,
 		parseExecShellCommandExitStatus,
 		parseToolResultWithMedia
 	} from '$lib/utils';
-	import { toolsStore } from '$lib/stores/tools.svelte';
-	import { parseExecShellCommandMeta } from './parsers/exec-shell-command';
-	import type { DatabaseMessageExtra } from '$lib/types';
-	import ToolCallBlock from './ToolCallBlock.svelte';
 
 	interface Props {
 		section: AgenticSection;

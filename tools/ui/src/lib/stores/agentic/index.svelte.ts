@@ -10,18 +10,6 @@
  * the permission/continue/steering gates owned by {@link AgenticGates}.
  */
 
-import { ChatService } from '$lib/services';
-import { config } from '$lib/stores/settings.svelte';
-import { conversationsStore } from '$lib/stores/conversations.svelte';
-import { mcpStore } from '$lib/stores/mcp.svelte';
-import { modelsStore } from '$lib/stores/models.svelte';
-import { toolsStore } from '$lib/stores/tools.svelte';
-import { permissionsStore } from '$lib/stores/permissions.svelte';
-import { BuiltInTool, ToolSource, ToolPermissionDecision } from '$lib/enums';
-import { SvelteMap } from 'svelte/reactivity';
-import { ToolsService } from '$lib/services/tools.service';
-import { SandboxService } from '$lib/services/sandbox.service';
-import { isAbortError } from '$lib/utils';
 import { DEFAULT_AGENTIC_CONFIG, NEWLINE } from '$lib/constants';
 import {
 	AUDIO_MIME_TO_EXTENSION,
@@ -793,9 +781,11 @@ class AgenticStore {
 							const args = this.parseToolArguments(toolCall.function.arguments);
 							const cwd = conversationsStore.activeConversation?.cwd;
 							const msg = await createToolResultMessage(toolCall.id, '', undefined, cwd);
+
 							createdToolResultMessageId = msg.id;
 
 							let accumulated = '';
+
 							for await (const ev of ToolsService.streamTool(toolName, args, signal, cwd)) {
 								if (ev.chunk !== null) {
 									accumulated += ev.chunk;

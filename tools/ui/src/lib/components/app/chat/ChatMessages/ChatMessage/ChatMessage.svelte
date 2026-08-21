@@ -5,8 +5,7 @@
 		ChatMessageMcpPrompt,
 		ChatMessageSynthetic,
 		ChatMessageSystem,
-		ChatMessageSynthetic,
-		ChatMessageMcpPrompt
+		ChatMessageUser
 	} from '$lib/components/app/chat';
 	import { REASONING_TAGS, ROUTES, SYSTEM_MESSAGE_PLACEHOLDER } from '$lib/constants';
 	import { setChatMessageActionsContext, setChatMessageEditContext } from '$lib/contexts';
@@ -386,20 +385,7 @@
 	{#if message.role === MessageRole.SYSTEM}
 		<ChatMessageSystem bind:textareaElement class={className} {message} />
 	{:else if mcpPromptExtra}
-		<ChatMessageMcpPrompt
-			class={className}
-			{deletionInfo}
-			{message}
-			mcpPrompt={mcpPromptExtra}
-			onConfirmDelete={handleConfirmDelete}
-			onCopy={handleCopy}
-			onDelete={handleDelete}
-			onEdit={handleEdit}
-			onNavigateToSibling={handleNavigateToSibling}
-			onShowDeleteDialogChange={handleShowDeleteDialogChange}
-			{showDeleteDialog}
-			{siblingInfo}
-		/>
+		<ChatMessageMcpPrompt class={className} {message} mcpPrompt={mcpPromptExtra} />
 	{:else if isSynthetic}
 		<ChatMessageSynthetic {message} class={className} />
 	{:else if message.role === MessageRole.USER}

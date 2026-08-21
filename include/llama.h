@@ -390,6 +390,9 @@ extern "C" {
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
+        enum llama_moe_cache_mode moe_cache_mode; // runtime MoE expert cache mode
+        size_t moe_cache_budget_mib;               // 0 uses the provider's available-memory budget
+
         // optional path to a per-layer K-cache mean-centering bias file (GGUF), or NULL to disable.
         // the bias is subtracted from the K vector for each (kv-head, channel) right before it is
         // written into the K cache, which improves quantization fidelity for GGML_TYPE_Q4_0 without

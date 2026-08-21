@@ -191,18 +191,11 @@ export {
 	rankEntries,
 	joinPath,
 	highlightMatch,
-	type GlobEntry,
-	type GlobSearchArgs,
 	type PathQuery
 } from './working-directory';
 
 // Shared `file_glob_search` runner with a short-lived result cache
-export {
-	runGlobSearch,
-	runGlobSearchWithChildren,
-	type GlobEntryResult,
-	type GlobSearchResult
-} from './glob-search';
+export { runGlobSearch, runGlobSearchWithChildren } from './glob-search';
 
 // Mention-token detection (for the `@`-triggered file/folder mention picker)
 export {
@@ -218,7 +211,7 @@ export {
 	type CommandDismissSnapshot
 } from './command-token';
 
-// Tokenization for the chat-form contenteditable (mention links + code spans <-> chip DOM)
+// Tokenization for the ChatFormInputRich (mention links + code spans <-> chip DOM)
 export {
 	tokenizeContent,
 	containsCodeSpan,
@@ -231,14 +224,13 @@ export {
 	rangeToTextOffset,
 	textOffsetToRange,
 	badgeAwareWordJump,
-	leadingBadgeEdgeOffset,
-	type ContentToken
-} from './contenteditable-tokenizer';
+	leadingBadgeEdgeOffset
+} from './chat-form-input-rich-tokenizer';
 
-// Source-space undo/redo history for the chat-form contenteditable
+// Source-space undo/redo history for the ChatFormInputRich
 export { SourceHistory, type SourceHistoryEntry } from './source-history';
 
-// Mention-badge visual contract (used by the contenteditable / rehype
+// Mention-badge visual contract (used by the ChatFormInputRich / rehype
 // DOM paths that build the same chip without a Svelte mount)
 export {
 	containsFileMentionLink,
@@ -252,8 +244,15 @@ export {
 	MENTION_BADGE_FOLDER_ICON_PATHS,
 	getMentionBadgeIconPaths,
 	getMentionBadgeLabel,
+	splitMentionSegments,
 	buildMentionInsertion
 } from './mention-badge';
+
+// Chat template utilities
+export {
+	detectThinkingSupport,
+	detectThinkingSupportWithReason
+} from './chat-template-thinking-detector';
 
 // Agentic content utilities (structured section derivation)
 export {

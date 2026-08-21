@@ -1,13 +1,10 @@
 <script lang="ts">
-	import { DialogModelNotAvailable } from '$lib/components/app';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { conversationsStore, isConversationsInitialized } from '$lib/stores/conversations.svelte';
-	import { modelsStore, modelOptions } from '$lib/stores/models.svelte';
-	import { isRouterMode } from '$lib/stores/server.svelte';
-	import { onMount } from 'svelte';
-	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
+	import { DialogModelNotAvailable } from '$lib/components/app';
 	import { APP_NAME, URL_PARAMS } from '$lib/constants';
+	import { chatStore, conversationsStore, modelsStore, serverStore } from '$lib/stores';
+	import { onMount } from 'svelte';
 
 	let qParam = $derived(page.url.searchParams.get(URL_PARAMS.QUERY));
 	let modelParam = $derived(page.url.searchParams.get(URL_PARAMS.MODEL));
@@ -45,9 +42,13 @@
 
 					// with ?load=true, start loading right away so the model is ready sooner;
 					// not awaited, so the UI stays usable during the load
-					if (loadParam === 'true' && isRouterMode() && !modelsStore.isModelLoaded(model.id)) {
-						modelsStore
-							.loadModel(model.id)
+					if (
+						loadParam === 'true' &&
+						serverStore.isRouterMode &&
+						!modelsStore.isModelLoaded(model.id)
+					) {
+						modelsStore.status
+							.load(model.id)
 							.catch((error) => console.error('Failed to load model:', error));
 					}
 				} catch (error) {

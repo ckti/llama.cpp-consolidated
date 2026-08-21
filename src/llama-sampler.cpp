@@ -3005,7 +3005,9 @@ static void llama_sampler_penalties_free(struct llama_sampler * smpl) {
 
 static bool llama_sampler_penalties_backend_init(
         struct llama_sampler       * smpl,
-        ggml_backend_buffer_type_t   buft) {
+        ggml_backend_buffer_type_t   buft,
+        uint32_t                      n_outputs_max_per_seq) {
+    GGML_UNUSED(n_outputs_max_per_seq);
     auto * sctx = (llama_sampler_penalties *) smpl->ctx;
 
     const bool res = llama_sampler_backend_support(smpl, buft);

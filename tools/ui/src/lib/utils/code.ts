@@ -31,21 +31,25 @@ export function splitGluedClosingCodeFences(markdown: string): string {
 	if (!markdown.includes('```')) return markdown;
 
 	const lines = markdown.split(NEWLINE);
+
 	let inside = false;
 	let changed = false;
 
 	for (let i = 0; i < lines.length; i++) {
 		const match = FENCE_LINE_REGEX.exec(lines[i]);
+
 		if (!match) continue;
 
 		if (!inside) {
 			inside = true;
+
 			continue;
 		}
 
 		inside = false;
 
 		const trailing = match[2];
+
 		if (trailing.includes('`') || !/\s/.test(trailing)) continue;
 
 		lines[i] = lines[i].slice(0, lines[i].length - trailing.length);

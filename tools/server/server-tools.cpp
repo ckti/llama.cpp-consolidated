@@ -10,6 +10,8 @@
 #include <chrono>
 #include <atomic>
 #include <cstring>
+#include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <algorithm>
 #include <iterator>
@@ -29,13 +31,6 @@
 #else
 #   include <cerrno>
 #   include <unistd.h>
-#endif
-
-#if defined(_WIN32)
-#   ifndef NOMINMAX
-#       define NOMINMAX
-#   endif
-#   include <windows.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -141,6 +136,13 @@ static std::string expand_home(const std::string & path) {
 static int entry_depth(const std::string & rel) {
     return 1 + (int) std::count(rel.begin(), rel.end(), '/');
 }
+
+// directories that a listing reports but never descends into: they can be enormous
+// lowercase only, the local walker case-folds a name before the lookup
+static const char * const SERVER_TOOL_JUNK_DIR_NAMES[] = {
+    ".git", ".svn", ".hg", "node_modules", "__pycache__",
+    ".venv", "venv", "dist", "build", "target", ".cache", ".idea", ".vscode",
+};
 
 class tools_io {
 public:
@@ -404,72 +406,7 @@ public:
             size_t max_output,
             int timeout_secs,
             const std::function<bool(const std::string &)> & on_chunk = nullptr) const override {
-        exec_result res;
-
-        common_subproc proc;
-
-        int options = subprocess_option_no_window
-                    | subprocess_option_combined_stdout_stderr
-                    | subprocess_option_inherit_environment
-                    | subprocess_option_search_user_path;
-
-        if (!proc.create(args, options, {}, cwd.empty() ? nullptr : cwd.c_str())) {
-            res.output = "failed to spawn process";
-            return res;
-        }
-
-        std::atomic<bool> done{false};
-        std::atomic<bool> timed_out{false};
-
-        std::thread timeout_thread([&]() {
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_secs);
-            while (!done.load()) {
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    timed_out.store(true);
-                    proc.terminate();
-                    return;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        });
-
-        FILE * f = proc.stdout_file();
-        std::string output;
-        bool truncated = false;
-        if (f) {
-            char buf[4096];
-            while (fgets(buf, sizeof(buf), f) != nullptr) {
-                if (!truncated) {
-                    size_t len = strlen(buf);
-                    if (output.size() + len <= max_output) {
-                        output.append(buf, len);
-                        if (on_chunk && !on_chunk(console_output_to_utf8(std::string(buf, len)))) {
-                            proc.terminate();
-                            break;
-                        }
-                    } else {
-                        size_t remaining = max_output - output.size();
-                        output.append(buf, remaining);
-                        if (on_chunk && remaining > 0) on_chunk(console_output_to_utf8(std::string(buf, remaining)));
-                        truncated = true;
-                    }
-                }
-            }
-        }
-
-        done.store(true);
-        if (timeout_thread.joinable()) {
-            timeout_thread.join();
-        }
-
-        res.exit_code = proc.join();
-
-        res.output    = console_output_to_utf8(output);
-        res.timed_out = timed_out.load();
-        if (truncated) {
-            res.output += "\n[output truncated]";
-        }
-        return res;
+        return run_subprocess(args, max_output, timeout_secs, on_chunk, /*combine_stderr=*/true, cwd);
     }
 
 private:
@@ -882,8 +819,33 @@ struct container_runtime_spec {
 };
 
 static std::unique_ptr<tools_io> make_tools_io(const json & params) {
-    std::string cwd = json_value(params, "cwd", std::string());
-    return std::make_unique<tools_io_basic>(cwd);
+    std::string cwd     = json_value(params, "cwd", std::string());
+    std::string runtime = json_value(params, "runtime", std::string());
+    if (runtime.empty()) {
+        // an empty runtime runs the tools on the host
+        return std::make_unique<tools_io_basic>(cwd);
+    }
+    container_runtime_spec container;
+    if (container_runtime_spec::parse(runtime, container)) {
+        // spawning belongs to the runtime that owns the container, a tool call only attaches
+        if (!container.attach) {
+            throw std::runtime_error("tool runtime must name a running container: " + runtime);
+        }
+        if (!container_runtime_spec::is_valid_id(container.arg)) {
+            throw std::runtime_error("invalid container id: " + container.arg);
+        }
+        return std::make_unique<tools_io_container>(container.bin, container.arg, cwd);
+    }
+    const std::string ssh_prefix = "ssh:";
+    if (runtime.rfind(ssh_prefix, 0) == 0) {
+        std::string target = runtime.substr(ssh_prefix.size());
+        if (!tools_io_ssh::is_valid_target(target)) {
+            throw std::runtime_error("invalid ssh target: " + target);
+        }
+        return std::make_unique<tools_io_ssh>(target, cwd);
+    }
+    // do not fall back to the host, the caller asked for an isolate
+    throw std::runtime_error("unknown tool runtime: " + runtime);
 }
 
 // no '/' in pattern -> match basename at any depth; else match full relative path
@@ -1793,59 +1755,6 @@ struct server_tool_get_info : server_tool {
     }
 };
 
-//
-// get_info: returns runtime info (OS name/version and cwd)
-//
-
-static constexpr size_t SERVER_TOOL_GET_INFO_MAX_OUTPUT = 4096;
-static constexpr int    SERVER_TOOL_GET_INFO_TIMEOUT    = 5; // seconds
-
-struct server_tool_get_info : server_tool {
-    server_tool_get_info() {
-        name = "get_info";
-        display_name = "Get Runtime Info";
-        permission_write = false;
-    }
-
-    json get_definition() const override {
-        return {
-            {"type", "function"},
-            {"function", {
-                {"name", name},
-                {"description", "Returns runtime info: the OS name/version and the current working directory"},
-                {"parameters", {
-                    {"type", "object"},
-                    {"properties", json::object()},
-                }},
-            }},
-        };
-    }
-
-    json invoke(json params, server_tool::stream *) const override {
-        auto io = make_tools_io(params);
-
-#ifdef _WIN32
-        auto res = io->run({"cmd", "/c", "ver"}, SERVER_TOOL_GET_INFO_MAX_OUTPUT, SERVER_TOOL_GET_INFO_TIMEOUT);
-#else
-        auto res = io->run({"uname", "-a"}, SERVER_TOOL_GET_INFO_MAX_OUTPUT, SERVER_TOOL_GET_INFO_TIMEOUT);
-#endif
-        // "ver" prints a blank line before the version, so the output is stripped on both ends;
-        // a failed spawn or a timeout leaves a diagnostic in res.output, which is not an OS name
-        std::string os_info = res.exit_code == 0 && !res.timed_out ? string_strip(res.output) : "unknown";
-
-        std::string cwd = json_value(params, "cwd", std::string());
-        if (cwd.empty()) {
-            std::error_code ec;
-            cwd = path_to_utf8(fs::current_path(ec));
-        }
-
-        return {
-            {"os",  os_info},
-            {"cwd", cwd},
-        };
-    }
-};
-
 struct server_tool_stream_result : server_task_result {
     std::string chunk;
     bool done = false;
@@ -2051,7 +1960,6 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
     tools.push_back(std::make_unique<server_tool_exec_shell_command>());
     tools.push_back(std::make_unique<server_tool_write_file>());
     tools.push_back(std::make_unique<server_tool_edit_file>());
-    tools.push_back(std::make_unique<server_tool_get_datetime>());
     tools.push_back(std::make_unique<server_tool_get_info>());
     return tools;
 }
@@ -2070,6 +1978,20 @@ static std::string get_header(const std::map<std::string, std::string> & headers
         }
     }
     return default_value;
+}
+
+server_tools::server_tools() = default;
+server_tools::~server_tools() = default;
+
+// the "<engine>:<image>" form owns a container lifecycle
+// anything else names an existing target, so only its spec is validated here at startup
+static std::unique_ptr<server_tools_runtime> make_tools_runtime(const std::string & spec) {
+    container_runtime_spec parsed;
+    if (container_runtime_spec::parse(spec, parsed) && !parsed.attach) {
+        return std::make_unique<server_tools_container_runtime>(spec);
+    }
+    make_tools_io({{"runtime", spec}}); // nothing to own, just reject a bad spec now
+    return std::make_unique<server_tools_static_runtime>(spec);
 }
 
 void server_tools::setup(const std::vector<std::string> & enabled_tools,
@@ -2161,9 +2083,33 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
             bool stream = body.value("stream", false);
 
             // accept x-tool-cwd header to override of the process
+            if (params.contains("cwd")) {
+                params.erase("cwd");
+            }
             auto cwd = get_header(req.headers, "x-tool-cwd");
             if (!cwd.empty()) {
                 params["cwd"] = cwd;
+            }
+
+            // accept x-tool-runtime header to route tool I/O through an isolate, e.g. "docker-container:<id>";
+            // falls back to the --tools-runtime isolate, if configured
+            if (params.contains("runtime")) {
+                params.erase("runtime");
+            }
+            auto runtime_header = get_header(req.headers, "x-tool-runtime");
+            if (!runtime_header.empty()) {
+                params["runtime"] = runtime_header;
+            } else if (runtime) {
+                params["runtime"] = runtime->spec();
+            }
+
+            // x-resp-type header is only used by read_file for now
+            if (params.contains("resp_type")) {
+                params.erase("resp_type");
+            }
+            auto resp_type = get_header(req.headers, "x-resp-type");
+            if (!resp_type.empty()) {
+                params["resp_type"] = resp_type;
             }
 
             server_tool & tool = find_tool(tools, tool_name, stream);

@@ -190,7 +190,7 @@ struct common_speculative_impl {
     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
 
     // true if this implementation requires the target context to extract post-norm embeddings
-    virtual bool need_embd() const = 0;
+    virtual bool need_embd() const { return false; }
 
     // true if this implementation requires the target context to extract pre-norm embeddings
     virtual bool need_embd_nextn() const { return false; }

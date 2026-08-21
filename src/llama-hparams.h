@@ -395,6 +395,7 @@ struct llama_hparams {
 
     // dimension of key embeddings across all k-v heads
     uint32_t n_embd_k_gqa(uint32_t il = 0) const;
+    uint32_t n_embd_k_idx(uint32_t il = 0) const;
 
     // dimension of value embeddings across all k-v heads
     uint32_t n_embd_v_gqa(uint32_t il = 0) const;

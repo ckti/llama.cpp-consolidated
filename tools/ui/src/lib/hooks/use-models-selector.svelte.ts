@@ -1,14 +1,3 @@
-import { onMount } from 'svelte';
-import {
-	modelsStore,
-	modelOptions,
-	modelsLoading,
-	modelsUpdating,
-	selectedModelId,
-	singleModelName
-} from '$lib/stores/models.svelte';
-import { isRouterMode } from '$lib/stores/server.svelte';
-import { CHAT_INPUT_FOCUS_SELECTOR } from '$lib/constants';
 import { filterModelOptions, groupModelOptions } from '$lib/components/app/models/utils';
 import { CHAT_INPUT_FOCUS_SELECTOR } from '$lib/constants';
 import { modelsStore, serverStore } from '$lib/stores';

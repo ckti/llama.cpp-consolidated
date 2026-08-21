@@ -24,15 +24,27 @@ import type {
 	SettingsSection,
 	SettingsSectionEntry
 } from '$lib/types';
-import { CLI_FLAGS } from './cli-flags';
-import { DEFAULT_MCP_CONFIG } from './mcp';
-import {
-	FILE_GLOB_SEARCH_PICKERS_MAX_SEARCH_DEPTH,
-	FILE_GLOB_SEARCH_PICKERS_DEFAULT_SEARCH_DEPTH
-} from './working-directory';
-import { SETTINGS_KEYS } from './settings-keys';
-import { ROUTES, SETTINGS_SECTION_SLUGS } from './routes';
-import { TITLE_GENERATION } from './title-generation';
+
+/** Settings sections — slug is the routing identity, title is the display label. */
+export const SETTINGS_SECTIONS = {
+	AGENTIC: { slug: 'agentic', title: 'Agentic' },
+	DEVELOPER: { slug: 'developer', title: 'Developer' },
+	DISPLAY: { slug: 'display', title: 'Display' },
+	GENERAL: { slug: 'general', title: 'General' },
+	IMPORT_EXPORT: { slug: 'import-export', title: 'Import/Export' },
+	SAMPLING_PENALTIES: { slug: 'sampling-penalties', title: 'Sampling & Penalties' },
+	TOOLS: { slug: 'tools', title: 'Tools' }
+} as const;
+
+export const SETTINGS_SECTION_SLUGS = {
+	AGENTIC: SETTINGS_SECTIONS.AGENTIC.slug,
+	DEVELOPER: SETTINGS_SECTIONS.DEVELOPER.slug,
+	DISPLAY: SETTINGS_SECTIONS.DISPLAY.slug,
+	GENERAL: SETTINGS_SECTIONS.GENERAL.slug,
+	IMPORT_EXPORT: SETTINGS_SECTIONS.IMPORT_EXPORT.slug,
+	SAMPLING_PENALTIES: SETTINGS_SECTIONS.SAMPLING_PENALTIES.slug,
+	TOOLS: SETTINGS_SECTIONS.TOOLS.slug
+} as const;
 
 export const SETTINGS_SECTION_TITLES = {
 	AGENTIC: SETTINGS_SECTIONS.AGENTIC.title,
@@ -184,10 +196,7 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				help: 'Display generation statistics (tokens/second, token count, duration) below each assistant message.',
 				key: SETTINGS_KEYS.SHOW_MESSAGE_STATS,
 				label: 'Show message generation statistics',
-				help: 'Display generation statistics (tokens/second, token count, duration) below each assistant message.',
-				defaultValue: true,
-				type: SettingsFieldType.CHECKBOX,
-				section: SETTINGS_SECTION_SLUGS.DISPLAY
+				type: SettingsFieldType.CHECKBOX
 			},
 			{
 				defaultValue: false,
@@ -212,14 +221,22 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
-				key: SETTINGS_KEYS.RENDER_CONTENT_AS_RAW_TEXT,
-				label: 'Render content as raw text',
-				help: 'Display user, system and thinking content as plain text instead of formatted Markdown. Markdown is the default so that @-mention badges render in sent messages.',
-				defaultValue: false,
-				type: SettingsFieldType.CHECKBOX,
-				section: SETTINGS_SECTION_SLUGS.DISPLAY
+				defaultValue: true,
+				help: 'Render user messages using markdown formatting in the chat. Turn this off to keep a message exactly as typed; @-mention badges show either way.',
+				key: SETTINGS_KEYS.RENDER_USER_CONTENT_AS_MARKDOWN,
+				label: 'Render user content as Markdown',
+				type: SettingsFieldType.CHECKBOX
 			},
 			{
+				defaultValue: true,
+				help: 'Render the reasoning/thinking block content as formatted Markdown instead of plain text.',
+				key: SETTINGS_KEYS.RENDER_THINKING_AS_MARKDOWN,
+				label: 'Render thinking as Markdown',
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: false,
+				help: 'Always display code blocks at their full natural height, overriding any height limits.',
 				key: SETTINGS_KEYS.FULL_HEIGHT_CODE_BLOCKS,
 				label: 'Use full height code blocks',
 				type: SettingsFieldType.CHECKBOX
@@ -268,16 +285,10 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 			},
 			{
 				defaultValue: false,
-				type: SettingsFieldType.CHECKBOX,
-				section: SETTINGS_SECTION_SLUGS.DISPLAY
-			},
-			{
+				help: 'Display the full file system path inside file and folder @-mention badges instead of just the file or folder name.',
 				key: SETTINGS_KEYS.SHOW_FULL_PATH_IN_MENTIONS,
 				label: 'Show full path in mentions',
-				help: 'Display the full file system path inside file and folder @-mention badges instead of just the file or folder name.',
-				defaultValue: false,
-				type: SettingsFieldType.CHECKBOX,
-				section: SETTINGS_SECTION_SLUGS.DISPLAY
+				type: SettingsFieldType.CHECKBOX
 			}
 		],
 		slug: SETTINGS_SECTION_SLUGS.DISPLAY,
@@ -317,23 +328,18 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				isPositiveInteger: true,
 				key: SETTINGS_KEYS.MCP_REQUEST_TIMEOUT_SECONDS,
 				label: 'MCP request timeout (seconds)',
-				help: 'Timeout for individual MCP tool calls.',
-				defaultValue: DEFAULT_MCP_CONFIG.requestTimeoutSeconds,
-				type: SettingsFieldType.INPUT,
-				section: SETTINGS_SECTION_SLUGS.AGENTIC,
-				isPositiveInteger: true
+				type: SettingsFieldType.INPUT
 			},
 			{
+				defaultValue: FILE_GLOB_SEARCH_PICKERS.DEFAULT_SEARCH_DEPTH,
+				help: 'How many directory levels below the working directory the @-mention file search descends. Larger values surface deeply nested files but take longer on large trees.',
+				isPositiveInteger: true,
 				key: SETTINGS_KEYS.MENTION_SEARCH_MAX_DEPTH,
 				label: 'Mention search depth',
-				help: 'How many directory levels below the working directory the @-mention file search descends. Larger values surface deeply nested files but take longer on large trees.',
-				defaultValue: FILE_GLOB_SEARCH_PICKERS_DEFAULT_SEARCH_DEPTH,
-				placeholder: `${FILE_GLOB_SEARCH_PICKERS_DEFAULT_SEARCH_DEPTH}`,
+				max: FILE_GLOB_SEARCH_PICKERS.MAX_SEARCH_DEPTH,
 				min: 1,
-				max: FILE_GLOB_SEARCH_PICKERS_MAX_SEARCH_DEPTH,
-				type: SettingsFieldType.INPUT,
-				section: SETTINGS_SECTION_SLUGS.AGENTIC,
-				isPositiveInteger: true
+				placeholder: `${FILE_GLOB_SEARCH_PICKERS.DEFAULT_SEARCH_DEPTH}`,
+				type: SettingsFieldType.INPUT
 			}
 		],
 		slug: SETTINGS_SECTION_SLUGS.AGENTIC,
@@ -660,23 +666,13 @@ function toSettingsSection(section: SettingsSectionEntry): SettingsSection {
 				type: s.type
 			})),
 		icon: section.icon,
-		fields: section.settings.map((s) => ({
-			key: s.key,
-			label: s.label,
-			type: s.type,
-			isExperimental: s.isExperimental,
-			isPositiveInteger: s.isPositiveInteger,
-			placeholder: s.placeholder,
-			min: s.min,
-			max: s.max,
-			dependsOn: s.dependsOn,
-			help: s.help,
-			options: s.options,
-			radioOptions: s.radioOptions
-		}))
-	})),
-	...STANDALONE_SECTIONS
-];
+		slug: section.slug,
+		title: section.title
+	};
+}
+
+/** Sidebar sections in custom display order (the registry array order). */
+export const SETTINGS_CHAT_SECTIONS: SettingsSection[] = SETTINGS_REGISTRY.map(toSettingsSection);
 
 /** INPUT-type settings whose value is a number. */
 export const NUMERIC_FIELDS = getAllSettings()

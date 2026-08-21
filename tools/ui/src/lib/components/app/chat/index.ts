@@ -120,8 +120,8 @@ export { default as ChatAttachmentsPreviewCurrentItem } from './ChatAttachments/
  * Used by ChatScreenForm and ChatMessageEditForm for both new conversations and message editing.
  *
  * **Architecture:**
- * - Composes ChatFormTextarea (or ChatFormContenteditable for messages with
- *   file mention links), ChatFormActions, and ChatFormPickerMcpPrompts
+ * - Composes ChatFormInput (a plain textarea, or a ChatFormInputRich for
+ *   messages with file mention links), ChatFormActions, and ChatFormPickerMcpPrompts
  * - Manages file upload state via `uploadedFiles` bindable prop
  * - Integrates with ModelsSelectorDropdown for model selection in router mode
  * - Communicates with parent via callbacks (onSubmit, onFilesAdd, onStop, etc.)
@@ -267,16 +267,11 @@ export { default as ChatFormInputFileInputInvisible } from './ChatForm/ChatFormI
 export { default as ChatFormMcpResourcesList } from './ChatForm/ChatFormMcpResourcesList.svelte';
 
 /**
- * Auto-resizing contenteditable input that renders `[name](file://...)`
- * mention links as inline chips while keeping the value as the markdown
- * source string. ChatForm swaps it in once a mention link lands in the
- * buffer. Shares the focus()/resetHeight()/caret handle with the textarea.
- */
-export { default as ChatFormContenteditable } from './ChatForm/ChatFormContenteditable.svelte';
-
-/**
- * Plain auto-resizing textarea with IME composition support. Default input
- * renderer inside ChatForm until a file mention lands.
+ * The message editor. Renders a plain auto-resizing textarea by default,
+ * or a ChatFormInputRich that renders `[name](file://...)` mention links as
+ * inline chips (keeping the value as the markdown source string) once a
+ * mention link lands in the buffer. The variant is selected via the
+ * `useRichInput` prop; both share one imperative handle.
  */
 export { default as ChatFormInput } from './ChatForm/ChatFormInput/ChatFormInput.svelte';
 
@@ -289,16 +284,6 @@ export { default as ChatFormInput } from './ChatForm/ChatFormInput/ChatFormInput
  * and is enforced on tool calls via the `x-tool-cwd` request header.
  */
 export { default as ChatFormCurrentWorkingDirectory } from './ChatForm/ChatFormCurrentWorkingDirectory/ChatFormCurrentWorkingDirectory.svelte';
-
-/**
- * Working directory selector for agent mode. Renders a chip below the chat
- * form; clicking it opens a popover with a directory picker backed by the
- * server's `file_glob_search` built-in tool (POST /tools). The picked
- * directory is exposed via `bind:directory`; changing it records a
- * synthetic "Set working directory to ..." user message into chat history
- * and is enforced on tool calls via the `x-tool-cwd` request header.
- */
-export { default as ChatFormWorkingDirectory } from './ChatForm/ChatFormWorkingDirectory.svelte';
 
 /**
  * **ChatFormPickerMcpPrompts** - MCP prompt selection interface
@@ -369,14 +354,14 @@ export { default as ChatFormPickerPopover } from './ChatForm/ChatFormPickers/Cha
  * Generic scrollable list for picker popovers. Provides search input,
  * scroll-into-view for keyboard navigation, loading skeletons, empty state,
  * and optional footer. Uses Svelte 5 snippets for item/skeleton/footer rendering.
- * Shared by ChatFormPickerMcpPrompts and ChatFormMentionPicker.
+ * Shared by ChatFormPickerMcpPrompts and ChatFormPickerMention.
  */
 export { default as ChatFormPickerList } from './ChatForm/ChatFormPickers/ChatFormPicker/ChatFormPickerList.svelte';
 
 /**
  * Generic button wrapper for picker list items. Provides consistent styling,
  * hover/selected states, and data-picker-index attribute for scroll-into-view.
- * Shared by ChatFormPickerMcpPrompts and ChatFormMentionPicker.
+ * Shared by ChatFormPickerMcpPrompts and ChatFormPickerMention.
  */
 export { default as ChatFormPickerListItem } from './ChatForm/ChatFormPickers/ChatFormPicker/ChatFormPickerListItem.svelte';
 
@@ -395,18 +380,18 @@ export { default as ChatFormPickerListItemSkeleton } from './ChatForm/ChatFormPi
 
 /**
  * `@`-triggered file/folder mention picker. Resolves `@<query>` in the chat
- * input to a filesystem match via the server's `file_glob_search` built-in
+ * input to a filesystem match via the server's `file_glob_search` server tool
  * tool, scoped to the conversation cwd (or server home when unset).
  * Selection splices a `[name](file:///<abs path>)` link into the input.
  */
-export { default as ChatFormMentionPicker } from './ChatForm/ChatFormPickers/ChatFormMentionPicker.svelte';
+export { default as ChatFormPickerMention } from './ChatForm/ChatFormPickers/ChatFormPickerMention.svelte';
 
 /**
  * `/`-triggered slash-command picker. Lists the available slash commands
  * (`/prompt`, `/cwd`, `/model`) filtered by the typed query; selection
  * hands the command to the parent for dispatch.
  */
-export { default as ChatFormCommandPicker } from './ChatForm/ChatFormPickers/ChatFormCommandPicker.svelte';
+export { default as ChatFormPickerCommand } from './ChatForm/ChatFormPickers/ChatFormPickerCommand.svelte';
 
 /**
  * Hosts the chat-form pickers (slash-command, MCP prompt, file mention)

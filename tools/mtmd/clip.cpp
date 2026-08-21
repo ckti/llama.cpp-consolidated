@@ -1062,6 +1062,25 @@ static std::unique_ptr<clip_graph> clip_get_graph_builder(clip_ctx * ctx, const 
             {
                 builder = std::make_unique<clip_graph_qwen3tts_spkenc>(ctx, img);
             } break;
+        case PROJECTOR_TYPE_POCKETTTS_SPKENC:
+            {
+                builder = std::make_unique<clip_graph_pockettts_spkenc>(ctx, img);
+            } break;
+        case PROJECTOR_TYPE_POCKETTTS_GEN:
+            {
+                const auto gen_process = params ? params->gen_process : CLIP_GEN_PROCESS_GEN_CODE;
+                const int  n_step = ctx->model.hparams.flow_n_step;
+                const int64_t n_latent = ctx->model.gen_input_lin_w->ne[0];
+                GGML_ASSERT(n_step > 0);
+                GGML_ASSERT(n_latent > 0);
+                // "inp_feats" takes the caller's buffer as-is, the graph must consume all of it
+                if (params && params->feats) {
+                    GGML_ASSERT(params->feats->size() % (size_t) n_latent == 0);
+                    GGML_ASSERT(params->feats->size() >= (size_t) n_latent);
+                }
+                const int  n_frames = params && params->feats ? (int) (params->feats->size() / n_latent) : 1;
+                builder = std::make_unique<clip_graph_pockettts_gen>(ctx, img, gen_process, n_step, n_frames);
+            } break;
         case PROJECTOR_TYPE_QWEN3TTS_GEN:
             {
                 const auto  gen_process = params ? params->gen_process : CLIP_GEN_PROCESS_GEN_CODE;
@@ -1285,6 +1304,7 @@ struct clip_model_loader {
                 // these are unused, but still need to be set to avoid issues
                 hparams.image_size = 0;
                 hparams.patch_size = 1;
+                get_string(KEY_GEN_AUDIO_VARIANT, hparams.gen_model_variant, false);
 
             } else {
                 GGML_ASSERT(false && "unknown modality");
@@ -1751,6 +1771,22 @@ struct clip_model_loader {
                         // matches the reference decoder's sliding_window (speech_tokenizer/config.json)
                         hparams.wav_tfm_swa = 72;
                     } break;
+                case PROJECTOR_TYPE_POCKETTTS_SPKENC:
+                case PROJECTOR_TYPE_POCKETTTS_GEN:
+                    {
+                        // mimi front-end takes the raw waveform, no mel
+                        hparams.audio_sample_rate = 24000;
+                        // seanet ratios are [6,5,4] in the config, the encoder reverses them
+                        hparams.seanet_ratios   = { 4, 5, 6 };
+                        hparams.seanet_n_stage  = (int32_t) hparams.seanet_ratios.size();
+                        hparams.mimi_downsample = 16;
+                        // matches the reference transformer's "context"
+                        hparams.mimi_tfm_context = 250;
+                        hparams.rope_theta       = 10000.0f;
+                        // flow_lm defaults, see pocket_tts/default_parameters.py
+                        hparams.flow_n_step       = 1;
+                        hparams.gen_eos_threshold = -4.0f;
+                    } break;
                 case PROJECTOR_TYPE_PADDLEOCR:
                     {
                         hparams.n_merge = 2;
@@ -1789,7 +1825,9 @@ struct clip_model_loader {
                         // unlimited-ocr shares the v1 projector but tiles up to 32
                         get_u32(KEY_PREPROC_MIN_TILES, hparams.preproc_min_tiles, false);
                         get_u32(KEY_PREPROC_MAX_TILES, hparams.preproc_max_tiles, false);
-                        GGML_ASSERT(hparams.preproc_min_tiles <= hparams.preproc_max_tiles);
+                        GGML_ASSERT(hparams.preproc_min_tiles >= 0
+                                    && hparams.preproc_min_tiles <= hparams.preproc_max_tiles
+                                    && hparams.preproc_max_tiles <= 256);
                      } break;
                 case PROJECTOR_TYPE_HUNYUANVL:
                     {
@@ -1878,7 +1916,7 @@ struct clip_model_loader {
                         // NOTE: feature_layers loaded in common path as optional
                         get_arr_int(KEY_PROJ_SPATIAL_OFFSETS, hparams.proj_spatial_offsets);
                         if (hparams.feature_layers.size() != hparams.proj_spatial_offsets.size()) {
-                            throw std::runtime_error(string_format("%s: feature_layers.size() %zu != proj_spatial_offsets.size() %zu", __func__,
+                            throw std::runtime_error(string_format("%s: feature_layers.size() %d != proj_spatial_offsets.size() %d",
                                                                    hparams.feature_layers.size(), hparams.proj_spatial_offsets.size()));
                         }
 
@@ -2121,7 +2159,8 @@ struct clip_model_loader {
 
         const bool has_standard_layers = (
             model.proj_type != PROJECTOR_TYPE_GEMMA3NV &&
-            model.proj_type != PROJECTOR_TYPE_QWEN3TTS_SPKENC);
+            model.proj_type != PROJECTOR_TYPE_QWEN3TTS_SPKENC &&
+            model.proj_type != PROJECTOR_TYPE_POCKETTTS_GEN);
 
         // layers
         const int n_layers_to_load = has_standard_layers ? hparams.n_layer : 0;
@@ -2795,6 +2834,81 @@ struct clip_model_loader {
                     model.mm_fc_w = get_tensor(string_format(TN_MM_AUDIO_FC, "weight"));
                     model.mm_fc_b = get_tensor(string_format(TN_MM_AUDIO_FC, "bias"));
                 } break;
+            case PROJECTOR_TYPE_POCKETTTS_SPKENC:
+                {
+                    load_seanet(model.seanet, false);
+                    model.downsample_w = get_tensor(string_format(TN_A_DOWNSAMPLE_CONV, "weight"));
+                    model.spk_proj_w   = get_tensor(string_format(TN_A_SPEAKER_PROJ, "weight"));
+                } break;
+            case PROJECTOR_TYPE_POCKETTTS_GEN:
+                {
+                    auto & flow = model.flow;
+                    flow.input_proj_w = get_tensor(string_format(TN_A_GEN_FLOW_INPUT_PROJ, "weight"));
+                    flow.input_proj_b = get_tensor(string_format(TN_A_GEN_FLOW_INPUT_PROJ, "bias"));
+                    flow.cond_embd_w  = get_tensor(string_format(TN_A_GEN_FLOW_COND_EMBD, "weight"));
+                    flow.cond_embd_b  = get_tensor(string_format(TN_A_GEN_FLOW_COND_EMBD, "bias"));
+                    flow.final_ada_w  = get_tensor(string_format(TN_A_GEN_FLOW_FINAL_ADA, "weight"));
+                    flow.final_ada_b  = get_tensor(string_format(TN_A_GEN_FLOW_FINAL_ADA, "bias"));
+                    flow.final_proj_w = get_tensor(string_format(TN_A_GEN_FLOW_FINAL_PROJ, "weight"));
+                    flow.final_proj_b = get_tensor(string_format(TN_A_GEN_FLOW_FINAL_PROJ, "bias"));
+
+                    flow.time.resize(2);
+                    for (size_t i = 0; i < flow.time.size(); i++) {
+                        auto & t = flow.time[i];
+                        t.freqs  = get_tensor(string_format(TN_A_GEN_FLOW_TIME_FREQS, (int) i));
+                        t.up_w   = get_tensor(string_format(TN_A_GEN_FLOW_TIME_UP,   (int) i, "weight"));
+                        t.up_b   = get_tensor(string_format(TN_A_GEN_FLOW_TIME_UP,   (int) i, "bias"));
+                        t.down_w = get_tensor(string_format(TN_A_GEN_FLOW_TIME_DOWN, (int) i, "weight"));
+                        t.down_b = get_tensor(string_format(TN_A_GEN_FLOW_TIME_DOWN, (int) i, "bias"));
+                        t.norm   = get_tensor(string_format(TN_A_GEN_FLOW_TIME_NORM, (int) i));
+                    }
+
+                    // one AdaLN block per flow depth, the count is only known from the tensors
+                    for (int il = 0; ; il++) {
+                        ggml_tensor * probe = get_tensor(string_format(TN_A_GEN_FLOW_BLK_NORM, il, "weight"), false);
+                        if (probe == nullptr) {
+                            break;
+                        }
+                        clip_flow_net::block blk;
+                        blk.norm_w = probe;
+                        blk.norm_b = get_tensor(string_format(TN_A_GEN_FLOW_BLK_NORM, il, "bias"));
+                        blk.up_w   = get_tensor(string_format(TN_A_GEN_FLOW_BLK_UP,   il, "weight"));
+                        blk.up_b   = get_tensor(string_format(TN_A_GEN_FLOW_BLK_UP,   il, "bias"));
+                        blk.down_w = get_tensor(string_format(TN_A_GEN_FLOW_BLK_DOWN, il, "weight"));
+                        blk.down_b = get_tensor(string_format(TN_A_GEN_FLOW_BLK_DOWN, il, "bias"));
+                        blk.ada_w  = get_tensor(string_format(TN_A_GEN_FLOW_BLK_ADA,  il, "weight"));
+                        blk.ada_b  = get_tensor(string_format(TN_A_GEN_FLOW_BLK_ADA,  il, "bias"));
+                        flow.blocks.push_back(blk);
+                    }
+
+                    model.gen_out_eos_w   = get_tensor(string_format(TN_A_GEN_OUT_EOS, "weight"));
+                    model.gen_out_eos_b   = get_tensor(string_format(TN_A_GEN_OUT_EOS, "bias"));
+                    model.gen_input_lin_w = get_tensor(string_format(TN_A_GEN_INPUT_LINEAR, "weight"));
+                    model.gen_emb_mean    = get_tensor(TN_A_GEN_EMB_MEAN);
+                    model.gen_emb_std     = get_tensor(TN_A_GEN_EMB_STD);
+
+                    // mimi decoder
+                    model.gen_quant_out_w = get_tensor(string_format(TN_A_GEN_WAV_QUANT_OUT, "weight"));
+                    model.gen_upsample_w  = get_tensor(string_format(TN_A_GEN_WAV_UPSAMPLE, "weight"));
+                    load_seanet(model.seanet, true);
+                    model.gen_tfm_layers.resize(hparams.n_layer);
+                    for (int il = 0; il < hparams.n_layer; il++) {
+                        auto & layer = model.gen_tfm_layers[il];
+                        const char * p = "a.gen.wav.tfm";
+                        layer.ln_1_w    = get_tensor(string_format(TN_LN_1,        p, il, "weight"));
+                        layer.ln_1_b    = get_tensor(string_format(TN_LN_1,        p, il, "bias"));
+                        layer.q_w       = get_tensor(string_format(TN_ATTN_Q,      p, il, "weight"));
+                        layer.k_w       = get_tensor(string_format(TN_ATTN_K,      p, il, "weight"));
+                        layer.v_w       = get_tensor(string_format(TN_ATTN_V,      p, il, "weight"));
+                        layer.o_w       = get_tensor(string_format(TN_ATTN_OUTPUT, p, il, "weight"));
+                        layer.ls_1_w    = get_tensor(string_format(TN_LS_1,        p, il, "weight"));
+                        layer.ln_2_w    = get_tensor(string_format(TN_LN_2,        p, il, "weight"));
+                        layer.ln_2_b    = get_tensor(string_format(TN_LN_2,        p, il, "bias"));
+                        layer.ff_up_w   = get_tensor(string_format(TN_FFN_UP,      p, il, "weight"));
+                        layer.ff_down_w = get_tensor(string_format(TN_FFN_DOWN,    p, il, "weight"));
+                        layer.ls_2_w    = get_tensor(string_format(TN_LS_2,        p, il, "weight"));
+                    }
+                } break;
             case PROJECTOR_TYPE_QWEN3TTS_GEN:
                 {
                     // code_predictor
@@ -3297,7 +3411,7 @@ struct clip_model_loader {
                     // Load separate layerwise and spatial projector tensors
                     const auto projector_count = hparams.feature_layers.size();
                     model.qf_proj_blocks.resize(projector_count);
-                    for (int bid = 0; bid < (int) projector_count; ++bid) {
+                    for (size_t bid = 0; bid < projector_count; ++bid) {
                         auto & b = model.qf_proj_blocks[bid];
 
                         // non-layerwise tensors
@@ -4106,6 +4220,17 @@ int clip_n_output_tokens(const clip_ctx * ctx, const clip_image_f32 * img) {
                 // one hidden-state vector fed back to the talker per call
                 n_patches = 1;
             } break;
+        case PROJECTOR_TYPE_POCKETTTS_SPKENC:
+            {
+                // one conditioning row per 12.5Hz frame
+                const int hop = ctx->model.hparams.mimi_downsample * 120;
+                n_patches = img->nx() / hop;
+            } break;
+        case PROJECTOR_TYPE_POCKETTTS_GEN:
+            {
+                // one latent per call for GEN_CODE, GEN_WAV sizes its input from the caller
+                n_patches = 1;
+            } break;
         case PROJECTOR_TYPE_GRANITE4_VISION:
             {
                 // Per-tile output token count: each projector block outputs
@@ -4149,6 +4274,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
     return clip_encode(ctx, &params);
 }
 
+// persisted state slots of the gen-audio decoder, per pipeline
+static std::vector<c2w_state_slot> list_gen_state_slots(const clip_hparams & hparams, const clip_model & model) {
+    switch (model.proj_type) {
+        case PROJECTOR_TYPE_QWEN3TTS_GEN:  return list_c2w_state_slots(hparams, model);
+        case PROJECTOR_TYPE_POCKETTTS_GEN: return list_pockettts_state_slots(hparams, model);
+        default:                           return {};
+    }
+}
+
 bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     const clip_image_f32_batch & imgs = *params->imgs;
     int n_batch_cur = imgs.entries.size();
@@ -4162,6 +4296,11 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     // if buffers are not allocated, we need to do a warmup run to allocate them
     if (!ctx->is_allocated) {
         clip_model_loader::warmup(*ctx, *params->imgs);
+    }
+
+    if (params->seed != ctx->rng_seed) {
+        ctx->rng_seed = params->seed;
+        ctx->rng.seed(params->seed == UINT32_MAX ? std::random_device{}() : params->seed);
     }
 
     // build the inference graph
@@ -4295,8 +4434,8 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         }
         set_input_f32("inp_raw", inp_raw);
 
-    } else if (!(ctx->proj_type() == PROJECTOR_TYPE_QWEN3TTS_GEN && params->gen_process == CLIP_GEN_PROCESS_GEN_WAV)) {
-        // audio input, code2wav is not here: its only input is "inp_codes", set in the switch below
+    } else if (params->gen_process != CLIP_GEN_PROCESS_GEN_WAV) {
+        // audio input. GEN_WAV is not here: it takes codes or feats, set in the switch below
         GGML_ASSERT(imgs.entries.size() == 1);
 
         const auto & mel_inp = imgs.entries[0];
@@ -4977,20 +5116,7 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
                         }
                     }
                     set_input_i32("inp_codes", codes);
-
-                    // upload the state from the previous call, or zero-fill on a cold start
-                    size_t offset = 0;
-                    for (const auto & slot : list_c2w_state_slots(hparams, model)) {
-                        ggml_tensor * t = get_inp_tensor(("state_in_" + slot.name).c_str());
-                        const size_t nb = ggml_nbytes(t);
-                        if (params->state_in && params->state_in->size() >= offset + nb) {
-                            ggml_backend_tensor_set(t, params->state_in->data() + offset, 0, nb);
-                        } else {
-                            std::vector<uint8_t> zeros(nb, 0);
-                            ggml_backend_tensor_set(t, zeros.data(), 0, nb);
-                        }
-                        offset += nb;
-                    }
+                    set_gen_state_in();
                 } else {
                     // code0 indexes gen_code_out_embd_w via ggml_get_rows; bound it
                     const int64_t vocab0 = model.gen_code_out_embd_w->ne[1];
@@ -5002,11 +5128,10 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
                     set_input_i32("inp_code0", code0);
 
                     // one uniform(0,1) draw per codebook, used by do_sampling()
-                    static std::mt19937 rng{ std::random_device{}() };
                     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
                     const int64_t n_acoustic = model.gen_code_head_w->ne[2];
                     for (int64_t g = 0; g < n_acoustic; g++) {
-                        std::vector<float> r = { dist(rng) };
+                        std::vector<float> r = { dist(ctx->rng) };
                         set_input_f32(("inp_rand_" + std::to_string(g)).c_str(), r);
                     }
                 }
@@ -5467,14 +5592,31 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     // for audio gen models
     //
 
+    // optional outputs: a pipeline yields codes or feats, and not all have an eos head
     if (params->out_codes != nullptr) {
         ggml_tensor * codes = ggml_graph_get_tensor(gf, "out_codes");
-        if (codes == nullptr) {
-            GGML_ABORT("out_codes requested but graph has no \"out_codes\" tensor");
+        if (codes != nullptr) {
+            auto & out_codes = *params->out_codes;
+            out_codes.resize(ggml_nelements(codes));
+            ggml_backend_tensor_get(codes, out_codes.data(), 0, ggml_nbytes(codes));
         }
-        auto & out_codes = *params->out_codes;
-        out_codes.resize(ggml_nelements(codes));
-        ggml_backend_tensor_get(codes, out_codes.data(), 0, ggml_nbytes(codes));
+    }
+    if (params->out_feats != nullptr) {
+        ggml_tensor * feats = ggml_graph_get_tensor(gf, "out_feats");
+        if (feats != nullptr) {
+            auto & out_feats = *params->out_feats;
+            out_feats.resize(ggml_nelements(feats));
+            ggml_backend_tensor_get(feats, out_feats.data(), 0, ggml_nbytes(feats));
+        }
+    }
+    if (params->out_is_eos != nullptr) {
+        ggml_tensor * eos = ggml_graph_get_tensor(gf, "out_eos_score");
+        if (eos != nullptr) {
+            GGML_ASSERT(ggml_nelements(eos) == 1);
+            float score = 0.0f;
+            ggml_backend_tensor_get(eos, &score, 0, sizeof(float));
+            *params->out_is_eos = score > hparams.gen_eos_threshold;
+        }
     }
     if (params->out_audio != nullptr) {
         ggml_tensor * audio = ggml_graph_get_tensor(gf, "out_audio");
@@ -5486,9 +5628,9 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         ggml_backend_tensor_get(audio, out_audio.data(), 0, ggml_nbytes(audio));
 
         // drop the tail audio that comes from the code-0 rear padding
-        const int64_t n_codes    = model.gen_code_head_w->ne[2] + 1;
+        const int64_t n_codes    = params->codes ? model.gen_code_head_w->ne[2] + 1 : 0;
         const int64_t n_frames_w = hparams.wav_tfm_swa;
-        const int64_t n_frames   = (int64_t) params->codes->size() / n_codes;
+        const int64_t n_frames   = params->codes ? (int64_t) params->codes->size() / n_codes : n_frames_w;
         if (n_frames < n_frames_w) {
             const size_t hop = out_audio.size() / n_frames_w;
             out_audio.resize((size_t) n_frames * hop);
@@ -5497,12 +5639,12 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     if (params->state_out != nullptr) {
         auto & state_out = *params->state_out;
         size_t total = 0;
-        for (const auto & slot : list_c2w_state_slots(hparams, model)) {
+        for (const auto & slot : list_gen_state_slots(hparams, model)) {
             total += (size_t) (slot.ne0 * slot.ne1) * sizeof(float);
         }
         state_out.resize(total);
         size_t offset = 0;
-        for (const auto & slot : list_c2w_state_slots(hparams, model)) {
+        for (const auto & slot : list_gen_state_slots(hparams, model)) {
             ggml_tensor * t = ggml_graph_get_tensor(gf, ("state_out_" + slot.name).c_str());
             if (t == nullptr) {
                 GGML_ABORT("state_out requested but graph has no \"state_out_%s\" tensor", slot.name.c_str());
@@ -5650,6 +5792,10 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
             return ctx->model.mm_fc_w->ne[2];
         case PROJECTOR_TYPE_QWEN3TTS_GEN:
             return ctx->model.gen_code_out_embd_w->ne[0];
+        case PROJECTOR_TYPE_POCKETTTS_SPKENC:
+            return ctx->model.spk_proj_w->ne[1];
+        case PROJECTOR_TYPE_POCKETTTS_GEN:
+            return ctx->model.gen_input_lin_w->ne[1];
         case PROJECTOR_TYPE_PARAKEET:
             return ctx->model.mm_1_w->ne[1];
         default:

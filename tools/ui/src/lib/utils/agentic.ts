@@ -22,35 +22,6 @@ import type {
 } from '$lib/types/database';
 
 /**
- * Represents a parsed section of agentic content for display
- */
-export interface AgenticSection {
-	type: AgenticSectionType;
-	content: string;
-	toolName?: string;
-	toolArgs?: string;
-	toolResult?: string;
-	toolResultExtras?: DatabaseMessageExtra[];
-	/** Working directory the tool call ran with (from the tool result
-	 *  message), shown by the exec_shell_command renderer. */
-	toolCwd?: string;
-	/** ID of the model-side tool call (matches tool_calls[i].id). Lets
-	 *  downstream consumers correlate a section with the agentic loop's
-	 *  currently-executing tool, e.g. to drive live-streaming UI state
-	 *  by matching against agenticStore.executingToolCallId. */
-	toolCallId?: string;
-	wasInterrupted?: boolean;
-}
-
-/**
- * Represents a tool result line that may reference an image attachment
- */
-export type ToolResultLine = {
-	text: string;
-	image?: DatabaseMessageExtraImageFile;
-};
-
-/**
  * Derives display sections from a single assistant message and its direct tool results.
  *
  * @param message - The assistant message
@@ -115,8 +86,7 @@ function deriveSingleTurnSections(
 			toolName: tc.function?.name,
 			toolResult: resultMsg?.content,
 			toolResultExtras: resultMsg?.extra,
-			toolCwd: resultMsg?.toolCwd,
-			toolCallId: tc.id
+			type
 		});
 	}
 

@@ -101,6 +101,7 @@
 						).find((entry) => entry.key === field);
 						const lo = entryByMinMax?.min ?? 1;
 						const hi = entryByMinMax?.max ?? Number.POSITIVE_INFINITY;
+
 						processedConfig[field] = Math.max(lo, Math.min(hi, Math.round(numValue)));
 					} else {
 						processedConfig[field] = numValue;
