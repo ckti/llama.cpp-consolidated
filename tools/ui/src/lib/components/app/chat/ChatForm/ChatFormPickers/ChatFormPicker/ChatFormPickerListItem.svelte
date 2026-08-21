@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { UI_DATA_ATTRS } from '$lib/constants';
 	import type { Snippet } from 'svelte';
 
 	interface Props {

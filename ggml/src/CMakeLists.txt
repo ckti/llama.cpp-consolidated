@@ -235,6 +235,8 @@ endif()
 if (GGML_OPENMP)
     find_package(OpenMP)
     if (OpenMP_FOUND)
+        set(GGML_OPENMP_TARGET_C OpenMP::OpenMP_C)
+        set(GGML_OPENMP_TARGET_CXX OpenMP::OpenMP_CXX)
         set(GGML_OPENMP_ENABLED "ON" CACHE INTERNAL "")
     else()
         set(GGML_OPENMP_ENABLED "OFF" CACHE INTERNAL "")
@@ -246,7 +248,7 @@ endif()
 
 if (GGML_OPENMP_ENABLED)
     target_compile_definitions(ggml-base PRIVATE GGML_USE_OPENMP)
-    target_link_libraries(ggml-base PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
+    target_link_libraries(ggml-base PRIVATE ${GGML_OPENMP_TARGET_C} ${GGML_OPENMP_TARGET_CXX})
 endif()
 
 add_library(ggml

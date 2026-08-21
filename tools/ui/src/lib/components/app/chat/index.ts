@@ -91,7 +91,7 @@ export { default as ChatAttachmentsListItemThumbnailImage } from './ChatAttachme
  * preview without carousel, or a gallery/carousel view when multiple items exist.
  * Uses ChatAttachmentPreviewSingle internally for each item's content.
  */
-export { default as ChatAttachmentsPreview } from './ChatAttachments/ChatAttachmentsPreview.svelte';
+export { default as ChatAttachmentsPreview } from './ChatAttachments/ChatAttachmentsPreview/ChatAttachmentsPreview.svelte';
 export { default as ChatAttachmentsPreviewNavButtons } from './ChatAttachments/ChatAttachmentsPreview/ChatAttachmentsPreviewNavButtons.svelte';
 export { default as ChatAttachmentsPreviewFileInfo } from './ChatAttachments/ChatAttachmentsPreview/ChatAttachmentsPreviewFileInfo.svelte';
 export { default as ChatAttachmentsPreviewThumbnailStrip } from './ChatAttachments/ChatAttachmentsPreview/ChatAttachmentsPreviewThumbnailStrip.svelte';
@@ -258,7 +258,7 @@ export { default as ChatFormContextGauge } from './ChatForm/ChatFormContextGauge
 /**
  * Hidden file input element for programmatic file selection.
  */
-export { default as ChatFormFileInputInvisible } from './ChatForm/ChatFormFileInputInvisible.svelte';
+export { default as ChatFormInputFileInputInvisible } from './ChatForm/ChatFormInput/ChatFormInputFileInputInvisible.svelte';
 
 /**
  * Displays MCP Resource attachments as a horizontal carousel.
@@ -278,7 +278,17 @@ export { default as ChatFormContenteditable } from './ChatForm/ChatFormContented
  * Plain auto-resizing textarea with IME composition support. Default input
  * renderer inside ChatForm until a file mention lands.
  */
-export { default as ChatFormTextarea } from './ChatForm/ChatFormTextarea.svelte';
+export { default as ChatFormInput } from './ChatForm/ChatFormInput/ChatFormInput.svelte';
+
+/**
+ * Working directory selector for agent mode. Renders a chip below the chat
+ * form; clicking it opens a popover with a directory picker backed by the
+ * server's `file_glob_search` server tool (POST /tools). The picked
+ * directory is exposed via `bind:directory`; changing it records a
+ * synthetic "Set working directory to ..." user message into chat history
+ * and is enforced on tool calls via the `x-tool-cwd` request header.
+ */
+export { default as ChatFormCurrentWorkingDirectory } from './ChatForm/ChatFormCurrentWorkingDirectory/ChatFormCurrentWorkingDirectory.svelte';
 
 /**
  * Working directory selector for agent mode. Renders a chip below the chat

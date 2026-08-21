@@ -1,5 +1,4 @@
 <script lang="ts" generics="T">
-	import type { Snippet } from 'svelte';
 	import { SearchInput } from '$lib/components/app';
 	import ScrollArea from '$lib/components/ui/scroll-area/scroll-area.svelte';
 	import { useScrollActiveRow } from '$lib/hooks/use-scroll-active-row.svelte';
@@ -28,7 +27,10 @@
 	}
 
 	let {
-		items,
+		autofocus = false,
+		emptyMessage,
+		footer,
+		inputRef = $bindable(null),
 		isLoading,
 		selectedIndex,
 		searchQuery = $bindable(),
@@ -40,6 +42,14 @@
 		onSearchClose,
 		itemKey,
 		item,
+		itemKey,
+		items,
+		onSearchClose,
+		scrollTrigger,
+		searchPlaceholder = 'Search...',
+		searchQuery = $bindable(),
+		selectedIndex,
+		showSearchInput,
 		skeleton,
 		skeletonCount = 6,
 		footer,

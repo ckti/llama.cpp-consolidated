@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ContextGaugePopup from './ChatFormContextGauge/ContextGaugePopup.svelte';
 	import {
 		ChatAttachmentsList,
 		ChatFormActions,
@@ -12,8 +13,6 @@
 	} from '$lib/components/app';
 	import {
 		CLIPBOARD_CONTENT_QUOTE_PREFIX,
-		INPUT_CLASSES,
-		SETTING_CONFIG_DEFAULT,
 		INITIAL_FILE_SIZE,
 		PROMPT_CONTENT_SEPARATOR
 	} from '$lib/constants';
@@ -96,12 +95,6 @@
 		class: className = '',
 		disabled = false,
 		isLoading = false,
-		placeholder = 'Type a message...',
-		showMcpPromptButton = false,
-		showAddButton = true,
-		showModelSelector = true,
-		uploadedFiles = $bindable([]),
-		value = $bindable(''),
 		onAttachmentRemove,
 		onFilesAdd,
 		onStop,
@@ -109,7 +102,13 @@
 		onSystemPromptClick,
 		onUploadedFileRemove,
 		onUploadedFilesChange,
-		onValueChange
+		onValueChange,
+		placeholder = 'Type a message...',
+		showAddButton = true,
+		showMcpPromptButton = false,
+		showModelSelector = true,
+		uploadedFiles = $bindable([]),
+		value = $bindable('')
 	}: Props = $props();
 
 	// Component References
@@ -124,7 +123,7 @@
 
 	let audioRecorder: AudioRecorder | undefined;
 	let chatFormActionsRef: ChatFormActions | undefined = $state(undefined);
-	let fileInputRef: ChatFormFileInputInvisible | undefined = $state(undefined);
+	let fileInputRef: ChatFormInputFileInputInvisible | undefined = $state(undefined);
 	let pickersRef: { handleKeydown: (event: KeyboardEvent) => boolean } | undefined =
 		$state(undefined);
 	let inputRef: ChatInputHandle | undefined = $state(undefined);
@@ -181,39 +180,23 @@
 	let isResourceDialogOpen = $state(false);
 	let preSelectedResourceUri = $state<string | undefined>(undefined);
 
-	let currentConfig = $derived(config());
+	let currentConfig = $derived(settingsStore.config);
 
 	let pasteLongTextToFileLength = $derived.by(() => {
 		const n = Number(currentConfig.pasteLongTextToFileLen);
+
 		return Number.isNaN(n) ? Number(SETTING_CONFIG_DEFAULT.pasteLongTextToFileLen) : n;
 	});
 
-	let isRouter = $derived(isRouterMode());
+	let isRouter = $derived(serverStore.isRouterMode);
 	let conversationModel = $derived(
-		chatStore.getConversationModel(activeMessages() as DatabaseMessage[])
+		getConversationModel(conversationsStore.activeMessages as DatabaseMessage[])
 	);
-	let activeModelId = $derived.by(() => {
-		const options = modelOptions();
+	let activeModelId = $derived(modelsStore.activeModelId);
 
-		if (!isRouter) {
-			return options.length > 0 ? options[0].model : null;
-		}
-
-		const selectedId = selectedModelId();
-		if (selectedId) {
-			const model = options.find((m) => m.id === selectedId);
-			if (model) return model.model;
-		}
-
-		if (conversationModel) {
-			const model = options.find((m) => m.model === conversationModel);
-			if (model) return model.model;
-		}
-
-		return null;
-	});
-
-	let hasModelSelected = $derived(!isRouter || !!conversationModel || !!selectedModelId());
+	let hasModelSelected = $derived(
+		!isRouter || !!conversationModel || !!modelsStore.selectedModelId
+	);
 	let hasLoadingAttachments = $derived(uploadedFiles.some((f) => f.isLoading));
 	let hasAttachments = $derived(
 		(attachments && attachments.length > 0) || (uploadedFiles && uploadedFiles.length > 0)
@@ -268,8 +251,10 @@
 	export function checkModelSelected(): boolean {
 		if (!hasModelSelected) {
 			chatFormActionsRef?.openModelSelector();
+
 			return false;
 		}
+
 		return true;
 	}
 
@@ -284,6 +269,7 @@
 	function handleFileRemove(fileId: string) {
 		if (fileId.startsWith('attachment-')) {
 			const index = parseInt(fileId.replace('attachment-', ''), 10);
+
 			if (!isNaN(index) && index >= 0 && index < attachments.length) {
 				onAttachmentRemove?.(index);
 			}
@@ -333,6 +319,7 @@
 		if (files.length > 0) {
 			event.preventDefault();
 			onFilesAdd?.(files);
+
 			return;
 		}
 
@@ -354,26 +341,27 @@
 								type: MimeTypeText.PLAIN
 							})
 					);
+
 					onFilesAdd?.(attachmentFiles);
 				}
 
 				// Handle MCP prompt attachments as ChatUploadedFile with mcpPrompt data
 				if (parsed.mcpPromptAttachments.length > 0) {
 					const mcpPromptFiles: ChatUploadedFile[] = parsed.mcpPromptAttachments.map((att) => ({
-						id: uuid(),
-						name: att.name,
-						size: att.content.length,
-						type: SpecialFileType.MCP_PROMPT,
 						file: new File([att.content], `${att.name}${FileExtensionText.TXT}`, {
 							type: MimeTypeText.PLAIN
 						}),
+						id: uuid(),
 						isLoading: false,
-						textContent: att.content,
 						mcpPrompt: {
-							serverName: att.serverName,
+							arguments: att.arguments,
 							promptName: att.promptName,
-							arguments: att.arguments
-						}
+							serverName: att.serverName
+						},
+						name: att.name,
+						size: att.content.length,
+						textContent: att.content,
+						type: SpecialFileType.MCP_PROMPT
 					}));
 
 					uploadedFiles = [...uploadedFiles, ...mcpPromptFiles];
@@ -412,17 +400,17 @@
 
 		const promptName = promptInfo.title || promptInfo.name;
 		const placeholder: ChatUploadedFile = {
-			id: placeholderId,
-			name: promptName,
-			size: INITIAL_FILE_SIZE,
-			type: SpecialFileType.MCP_PROMPT,
 			file: new File([], 'loading'),
+			id: placeholderId,
 			isLoading: true,
 			mcpPrompt: {
-				serverName: promptInfo.serverName,
+				arguments: args ? { ...args } : undefined,
 				promptName: promptInfo.name,
-				arguments: args ? { ...args } : undefined
-			}
+				serverName: promptInfo.serverName
+			},
+			name: promptName,
+			size: INITIAL_FILE_SIZE,
+			type: SpecialFileType.MCP_PROMPT
 		};
 
 		uploadedFiles = [...uploadedFiles, placeholder];
@@ -450,12 +438,12 @@
 			f.id === placeholderId
 				? {
 						...f,
-						isLoading: false,
-						textContent: promptText,
-						size: promptText.length,
 						file: new File([promptText], `${f.name}${FileExtensionText.TXT}`, {
 							type: MimeTypeText.PLAIN
-						})
+						}),
+						isLoading: false,
+						size: promptText.length,
+						textContent: promptText
 					}
 				: f
 		);
@@ -504,6 +492,7 @@
 	async function handleMicClick() {
 		if (!audioRecorder || !recordingSupported) {
 			console.warn('Audio recording not supported');
+
 			return;
 		}
 
@@ -529,7 +518,7 @@
 	}
 </script>
 
-<ChatFormFileInputInvisible bind:this={fileInputRef} onFileSelect={handleFileSelect} />
+<ChatFormInputFileInputInvisible bind:this={fileInputRef} onFileSelect={handleFileSelect} />
 
 <form
 	class="relative grid {className}"
@@ -618,7 +607,7 @@
 				/>
 			{/if}
 
-			{#if mcpHasResourceAttachments()}
+			{#if mcpStore.resources.hasAttachments}
 				<ChatFormMcpResourcesList
 					class="mb-3"
 					onResourceClick={(uri) => {

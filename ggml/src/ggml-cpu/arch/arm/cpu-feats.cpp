@@ -1,4 +1,5 @@
 #include "ggml-backend-impl.h"
+#include "ggml-feats.h"
 
 #if defined(__aarch64__)
 
@@ -84,7 +85,8 @@ struct aarch64_features {
 
 static int ggml_backend_cpu_aarch64_score() {
     int score = 1;
-    aarch64_features af;
+    const ggml_feats_arch64_runtime_t af = ggml_feats_get_arch64_runtime();
+    GGML_UNUSED(af);
 
 #ifdef GGML_USE_DOTPROD
     if (!af.has_dotprod) { return 0; }
@@ -116,4 +118,4 @@ static int ggml_backend_cpu_aarch64_score() {
 
 GGML_BACKEND_DL_SCORE_IMPL(ggml_backend_cpu_aarch64_score)
 
-# endif // defined(__aarch64__)
+# endif // defined(__aarch64__) || defined(_M_ARM64)

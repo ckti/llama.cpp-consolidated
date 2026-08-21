@@ -17,7 +17,7 @@
 	// Dialog state for model not available error
 	let showModelNotAvailable = $state(false);
 	let requestedModelName = $state('');
-	let availableModelNames = $derived(modelOptions().map((m) => m.model));
+	let availableModelNames = $derived(modelsStore.models.map((m) => m.model));
 
 	/**
 	 * Clear URL params after message is sent to prevent re-sending on refresh
@@ -75,7 +75,7 @@
 	}
 
 	onMount(async () => {
-		if (!isConversationsInitialized()) {
+		if (!conversationsStore.isInitialized) {
 			await conversationsStore.initialize();
 		}
 

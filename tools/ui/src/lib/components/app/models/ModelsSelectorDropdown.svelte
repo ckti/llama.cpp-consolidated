@@ -14,8 +14,13 @@
 		ModelsSelectorList,
 		ModelsSelectorOption
 	} from '$lib/components/app';
-	import ModelLoadHighlight from './ModelLoadHighlight.svelte';
-	import type { ModelItem } from './utils';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { MODEL_SELECTOR_ICON } from '$lib/constants';
+	import { KeyboardKey, ServerModelStatus } from '$lib/enums';
+	import { useModelsSelector } from '$lib/hooks/use-models-selector.svelte';
+	import { modelsStore } from '$lib/stores';
+	import { modelLoadFraction } from '$lib/utils';
 
 	interface Props {
 		class?: string;
@@ -40,7 +45,6 @@
 
 	const ms = useModelsSelector({
 		currentModel: () => currentModel,
-		useGlobalSelection: () => useGlobalSelection,
 		onModelChange: () => onModelChange,
 		onOpenChange: (open) => {
 			isOpen = open;
@@ -165,14 +169,14 @@
 		{@const selectedOption = ms.getDisplayOption()}
 		{@const triggerModel = selectedOption?.model}
 		{@const triggerStatus = triggerModel
-			? routerModels().find((m) => m.id === triggerModel)?.status?.value
+			? modelsStore.routerModels.find((m) => m.id === triggerModel)?.status?.value
 			: undefined}
 		{@const triggerLoading =
 			!!triggerModel &&
 			(triggerStatus === ServerModelStatus.LOADING ||
-				modelsStore.isModelOperationInProgress(triggerModel))}
+				modelsStore.status.isOperationInProgress(triggerModel))}
 		{@const triggerLoadPercent = triggerLoading
-			? Math.round(modelLoadFraction(modelsStore.getLoadProgress(triggerModel)) * 100)
+			? Math.round(modelLoadFraction(modelsStore.status.getLoadProgress(triggerModel)) * 100)
 			: 0}
 
 		{#if ms.isRouter}

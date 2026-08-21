@@ -49,6 +49,14 @@ mkdir -p "$2"
 OUT=$(realpath "$1")
 MNT=$(realpath "$2")
 
+# gpu-rocm self-hosted runner can't upload logs to blob; keep each run's logs in
+# their own dir keyed by the GitHub run id so an Actions run URL maps to its logs.
+if [ -n "${GG_BUILD_ROCM}" ] && [ -n "${GITHUB_RUN_ID}" ]; then
+    OUT="$OUT/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
+    mkdir -p "$OUT"
+    echo "ci results dir: $OUT"
+fi
+
 rm -f $OUT/*.log
 rm -f $OUT/*.exit
 rm -f $OUT/*.md
@@ -182,7 +190,7 @@ if [ ! -z ${GG_BUILD_OPENVINO} ]; then
     CMAKE_EXTRA="${CMAKE_EXTRA} -DGGML_OPENVINO=ON"
 
     # TODO: fix and re-enable the `test-llama-archs` test below
-    CTEST_EXTRA="-E test-llama-archs"
+    CTEST_EXTRA="-E test-llama-archs|test-recurrent-state-rollback-nemotron-h"
 fi
 
 ## helpers

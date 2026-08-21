@@ -245,6 +245,7 @@ set   (GGML_METAL_MACOSX_VERSION_MIN "" CACHE STRING
                                             "ggml: metal minimum macOS version")
 set   (GGML_METAL_STD "" CACHE STRING       "ggml: metal standard version (-std flag)")
 option(GGML_OPENMP                          "ggml: use OpenMP"                                ON)
+option(GGML_OPENMP_FETCH                    "ggml: fetch LLVM OpenMP"                         OFF)
 option(GGML_RPC                             "ggml: use RPC"                                   OFF)
 option(GGML_SYCL                            "ggml: use SYCL"                                  OFF)
 option(GGML_SYCL_F16                        "ggml: use 16 bit floats for sycl calculations"   OFF)
@@ -404,7 +405,7 @@ configure_package_config_file(
               GGML_BIN_INSTALL_DIR)
 
 write_basic_package_version_file(
-        ${CMAKE_CURRENT_BINARY_DIR}/ggml-version.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/ggml-config-version.cmake
     VERSION ${GGML_INSTALL_VERSION}
     COMPATIBILITY SameMajorVersion)
 
@@ -416,7 +417,7 @@ message(STATUS "ggml version: ${GGML_INSTALL_VERSION}")
 message(STATUS "ggml commit:  ${GGML_BUILD_COMMIT}")
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ggml-config.cmake
-              ${CMAKE_CURRENT_BINARY_DIR}/ggml-version.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/ggml-config-version.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ggml)
 
 if (MSVC)

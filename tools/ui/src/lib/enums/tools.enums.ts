@@ -1,20 +1,20 @@
 export enum ToolSource {
-	BUILTIN = 'builtin',
-	MCP = 'mcp',
+	BROWSER = 'browser',
 	CUSTOM = 'custom',
-	FRONTEND = 'frontend'
+	MCP = 'mcp',
+	SERVER = 'server'
 }
 
 export enum ToolPermissionDecision {
 	ALWAYS = 'always',
 	ALWAYS_SERVER = 'always_server',
-	ONCE = 'once',
-	DENY = 'deny'
+	DENY = 'deny',
+	ONCE = 'once'
 }
 
 export enum ToolResponseField {
-	PLAIN_TEXT = 'plain_text_response',
-	ERROR = 'error'
+	ERROR = 'error',
+	PLAIN_TEXT = 'plain_text_response'
 }
 
 /**
@@ -30,10 +30,16 @@ export enum GlobSearchType {
 /**
  * Wire-format identifiers for built-in and frontend tools. The string
  * value matches what the model emits in tool call names, so comparing
- * against `BuiltInTool.READ_FILE` is equivalent to comparing against the
- * raw `'read_file'` literal - the enum just keeps the two in lock-step
- * and gives TypeScript a single source of truth for autocomplete / rename
- * support.
+ * against `BuiltInTool.SERVER_READ_FILE` is equivalent to comparing
+ * against the raw `'read_file'` literal - the enum just keeps the two in
+ * lock-step and gives TypeScript a single source of truth for autocomplete
+ * / rename support.
+ *
+ * The `SERVER_` / `BROWSER_` prefixes mirror the tool's primary source
+ * (llama-server vs llama-ui). `get_info` is the exception: it is served by
+ * the server, but llama-ui falls back to a browser implementation when the
+ * server does not provide it, so it can surface under both categories in
+ * the UI while keeping a single wire name.
  */
 export enum BuiltInTool {
 	READ_FILE = 'read_file',

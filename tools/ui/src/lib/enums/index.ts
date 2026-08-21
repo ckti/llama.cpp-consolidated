@@ -1,4 +1,5 @@
 export {
+	AttachmentLabel,
 	AttachmentType,
 	AttachmentMenuItemId,
 	AttachmentItemEnabledWhen,
@@ -31,6 +32,8 @@ export {
 
 export { SessionRecordType } from './conversation-import.enums';
 
+export { BooleanString } from './boolean-string.enums';
+
 export { ReasoningEffort } from './reasoning-effort.enums';
 
 export {
@@ -43,13 +46,13 @@ export {
 	FileExtensionAudio,
 	FileExtensionPdf,
 	FileExtensionText,
-	MimeTypePrefix,
-	MimeTypeIncludes,
-	UriPattern,
 	MimeTypeApplication,
 	MimeTypeAudio,
 	MimeTypeVideo,
 	MimeTypeImage,
+	MimeTypePrefix,
+	MimeTypeIncludes,
+	UriPattern,
 	MimeTypeText,
 	SpecialFileType
 } from './files.enums';
@@ -70,7 +73,14 @@ export { ServerRole, ServerModelStatus, ServerModelsSseEventType } from './serve
 
 export { ParameterSource, SyncableParameterType, SettingsFieldType } from './settings.enums';
 
-export { ColorMode, HtmlInputType, McpPromptVariant, TooltipSide, UrlProtocol } from './ui.enums';
+export {
+	ColorLevel,
+	ColorMode,
+	HtmlInputType,
+	McpPromptVariant,
+	TooltipSide,
+	UrlProtocol
+} from './ui.enums';
 
 export { KeyboardKey } from './keyboard.enums';
 

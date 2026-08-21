@@ -21,7 +21,78 @@ vendor = {
     f"https://raw.githubusercontent.com/yhirose/cpp-httplib/{HTTPLIB_VERSION}/split.py":  "split.py",
     f"https://raw.githubusercontent.com/yhirose/cpp-httplib/{HTTPLIB_VERSION}/LICENSE":   "vendor/cpp-httplib/LICENSE",
 
-    "https://raw.githubusercontent.com/sheredom/subprocess.h/8671cee1fc09f11a70ce3782a0ee13177c3aa387/subprocess.h": "vendor/sheredom/subprocess.h",
+    "https://raw.githubusercontent.com/sheredom/subprocess.h/9ce0d701b6fb10f8f8c4445edd31e7c60a1237e3/subprocess.h": "vendor/sheredom/subprocess.h",
+
+    f"https://raw.githubusercontent.com/Cyan4973/xxHash/{XXHASH_COMMIT}/xxhash.c":      "vendor/hash/xxhash/xxhash.c",
+    f"https://raw.githubusercontent.com/Cyan4973/xxHash/{XXHASH_COMMIT}/xxhash.h":      "vendor/hash/xxhash/xxhash.h",
+    f"https://raw.githubusercontent.com/Cyan4973/xxHash/{XXHASH_COMMIT}/LICENSE":       "vendor/hash/xxhash/LICENSE",
+
+    # clibs/sha1 ships no license file, the source header says public domain
+    f"https://raw.githubusercontent.com/clibs/sha1/{SHA1_COMMIT}/sha1.c": "vendor/hash/sha1/sha1.c",
+    f"https://raw.githubusercontent.com/clibs/sha1/{SHA1_COMMIT}/sha1.h": "vendor/hash/sha1/sha1.h",
+
+    f"https://raw.githubusercontent.com/jb55/sha256.c/{SHA256_COMMIT}/sha256.c": "vendor/hash/sha256/sha256.c",
+    f"https://raw.githubusercontent.com/jb55/sha256.c/{SHA256_COMMIT}/sha256.h": "vendor/hash/sha256/sha256.h",
+    f"https://raw.githubusercontent.com/jb55/sha256.c/{SHA256_COMMIT}/LICENSE":  "vendor/hash/sha256/LICENSE",
+
+    f"https://raw.githubusercontent.com/jb55/rotate-bits.h/{ROTATE_BITS_COMMIT}/rotate-bits.h": "vendor/hash/rotate-bits/rotate-bits.h",
+    f"https://raw.githubusercontent.com/jb55/rotate-bits.h/{ROTATE_BITS_COMMIT}/LICENSE.md":   "vendor/hash/rotate-bits/LICENSE.md",
+}
+
+# local changes kept on top of the upstream sources
+patches = {
+    "vendor/hash/xxhash/xxhash.h": [(
+        '#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) /* >= C11 */\n',
+        '/* Windows SDK under 10.0.22000 is missing stdalign.h so we add a check\n'
+        '   before allowing the windows compiler to use the C11 form.\n'
+        '   Reference: https://github.com/Cyan4973/xxHash/issues/955 */\n'
+        '#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) \\\n'
+        '    && (defined(_MSC_VER) && (_MSC_VER >= 1000) || !defined(_MSC_VER)) /* >= C11 */\n'
+    )],
+
+    # sha1 exports a bare "SHA1" symbol, which clashes with the boringssl one at link time.
+    # we compile it as C++ (see vendor/hash/CMakeLists.txt) and put it in a namespace.
+    "vendor/hash/sha1/sha1.h": [
+        (
+            '#if defined(__cplusplus)\n'
+            'extern "C" {\n'
+            '#endif\n',
+
+            'namespace vendor_hash {\n'
+        ),
+        (
+            '#if defined(__cplusplus)\n'
+            '}\n'
+            '#endif\n',
+
+            '} // namespace vendor_hash\n'
+        ),
+    ],
+
+    "vendor/hash/sha1/sha1.c": [
+        (
+            '#include "sha1.h"\n',
+
+            '#include "sha1.h"\n'
+            '\n'
+            'namespace vendor_hash {\n'
+        ),
+        (
+            '    SHA1Final((unsigned char *)hash_out, &ctx);\n'
+            '}\n',
+
+            '    SHA1Final((unsigned char *)hash_out, &ctx);\n'
+            '}\n'
+            '\n'
+            '} // namespace vendor_hash\n'
+        ),
+    ],
+
+    # silence a maybe-uninitialized warning
+    "vendor/hash/sha256/sha256.c": [(
+        "  uint32_t W[16];\n",
+        "  uint32_t W[16] = {0};\n"
+    )],
 }
 
 def _apply_wifsignaled_patch(path: str) -> None:

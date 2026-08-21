@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 
 import pytest
 from utils import *
@@ -10,6 +12,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 
 # marker for the grep_search test to find in this file
 GREP_MARKER = "llama_cpp_test_tools_builtin_marker_grep_search"
+
+# image the container runtime tests run their shell in
+CONTAINER_IMAGE = "busybox"
 
 
 @pytest.fixture(autouse=True)
