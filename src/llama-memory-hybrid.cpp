@@ -78,15 +78,17 @@ llama_memory_context_ptr llama_memory_hybrid::init_batch(llama_batch_allocr & ba
                 // if all tokens are output, split by sequence
                 ubatch = balloc.split_seq(n_ubatch);
             } else {
-                // Use non-sequential split when KV cache is unified (needed for hellaswag/winogrande/multiple-choice)
-                const bool unified = (mem_attn->get_n_stream() == 1);
-
-                // [TAG_RECURRENT_ROLLBACK_SPLITS]
-                // the trailing (1 + n_rs_seq) tokens of each seq must stay in the same ubatch
-                //   so that the rollback snapshots remain valid
-                const uint32_t n_rs_seq = mem_recr->n_rs_seq;
-
-                ubatch = balloc.split_equal(n_ubatch, !unified, n_rs_seq > 0 ? n_rs_seq + 1 : 0);
+                if (mem_recr->n_rs_seq > 0) {
+                    // [TAG_RECURRENT_ROLLBACK_SPLITS]
+                    // see llama_memory_recurrent::init_batch() -- the rotating
+                    // snapshot ring removed the same-ubatch snapshot restriction,
+                    // but split_seq() is kept until split_equal() rollback is tested
+                    ubatch = balloc.split_seq(n_ubatch);
+                } else {
+                    // Use non-sequential split when KV cache is unified (needed for hellaswag/winogrande/multiple-choice)
+                    const bool unified = (mem_attn->get_n_stream() == 1);
+                    ubatch = balloc.split_equal(n_ubatch, !unified, 0);
+                }
             }
 
             if (ubatch.n_tokens == 0) {
@@ -272,6 +274,18 @@ const llama_ubatch & llama_memory_hybrid_context::get_ubatch() const {
 
 const llama_kv_cache_context * llama_memory_hybrid_context::get_attn() const {
     return static_cast<const llama_kv_cache_context *>(ctx_attn.get());
+}
+
+ggml_tensor * llama_memory_hybrid_context::get_turbo_rot_forward() const {
+    return ctx_attn ? ctx_attn->get_turbo_rot_forward() : nullptr;
+}
+
+ggml_tensor * llama_memory_hybrid_context::get_turbo_rot_inverse() const {
+    return ctx_attn ? ctx_attn->get_turbo_rot_inverse() : nullptr;
+}
+
+ggml_tensor * llama_memory_hybrid_context::get_turbo_innerq_scale_inv() const {
+    return ctx_attn ? ctx_attn->get_turbo_innerq_scale_inv() : nullptr;
 }
 
 const llama_memory_recurrent_context * llama_memory_hybrid_context::get_recr() const {

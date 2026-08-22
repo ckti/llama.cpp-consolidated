@@ -7,8 +7,15 @@
 #include "ggml-metal-context.h"
 #include "ggml-metal-ops.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
+
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
+#include <sys/sysctl.h>
+#endif
 
 #define GGML_METAL_NAME "MTL"
 #define GGML_METAL_MAX_DEVICES 16
@@ -925,7 +932,29 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
         if (!initialized) {
             // workaround macOS limitation (kIOGPUCommandBufferCallbackErrorImpactingInteractivity) until proper fix becomes possible
             // ref: https://github.com/ggml-org/llama.cpp/issues/20141#issuecomment-4272947703
-            setenv("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1", true);
+            //
+            // The override fixes long-context command-buffer timeouts on
+            // M1/M2, but on M5/current macOS it prevents
+            // MTLCreateSystemDefaultDevice() from returning a device at all.
+            // Keep it on by default and disable it only on M5 (sysctl needs
+            // no Metal device); GGML_METAL_RELAX_CDM_CTXSTORE_TIMEOUT=0/1
+            // forces either way.
+            bool relax_cdm_ctxstore = true;
+#if TARGET_OS_OSX
+            {
+                char brand[128] = { 0 };
+                size_t brand_len = sizeof(brand) - 1;
+                if (sysctlbyname("machdep.cpu.brand_string", brand, &brand_len, NULL, 0) == 0 && strstr(brand, " M5") != NULL) {
+                    relax_cdm_ctxstore = false;
+                }
+            }
+#endif
+            if (const char * env = getenv("GGML_METAL_RELAX_CDM_CTXSTORE_TIMEOUT")) {
+                relax_cdm_ctxstore = atoi(env) != 0;
+            }
+            if (relax_cdm_ctxstore) {
+                setenv("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1", true);
+            }
 
             static ggml_backend_metal_reg_ptr reg_ctx(ggml_backend_metal_reg_init());
 
@@ -945,6 +974,11 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
 
         initialized = true;
     }
+
+    // No GGML_USE_* guard: that macro is defined for consumers of the backend
+    // (ggml-backend-reg.cpp), not for this target, so guarding here compiled the
+    // registration out entirely and the provider never installed.
+    ggml_metal_moe_cache_register(&reg);
 
     return &reg;
 }

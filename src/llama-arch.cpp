@@ -40,6 +40,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_QWEN3VLMOE,       "qwen3vlmoe"       },
     { LLM_ARCH_QWEN35,           "qwen35"           },
     { LLM_ARCH_QWEN35MOE,        "qwen35moe"        },
+    { LLM_ARCH_DSPARK,           "dspark"           },
     { LLM_ARCH_PHI2,             "phi2"             },
     { LLM_ARCH_PHI3,             "phi3"             },
     { LLM_ARCH_PHIMOE,           "phimoe"           },
@@ -152,7 +153,6 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_MELLUM,           "mellum"           },
     { LLM_ARCH_NANBEIGE,         "nanbeige"         },
     { LLM_ARCH_QWEN3TTS,         "qwen3tts"         },
-    { LLM_ARCH_POCKETTTS,        "pockettts"        },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -216,6 +216,15 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_MOE_EVERY_N_LAYERS,                "%s.moe_every_n_layers"                },
     { LLM_KV_MOE_LATENT_SIZE,                   "%s.moe_latent_size"                   },
     { LLM_KV_NEXTN_PREDICT_LAYERS,              "%s.nextn_predict_layers"              },
+    { LLM_KV_DSPARK_BLOCK_SIZE,                 "%s.dspark.block_size"                 },
+    { LLM_KV_DSPARK_MASK_TOKEN_ID,              "%s.dspark.mask_token_id"              },
+    { LLM_KV_DSPARK_TARGET_LAYERS,              "%s.dspark.target_layers"              },
+    { LLM_KV_DSPARK_MARKOV_RANK,                "%s.dspark.markov_rank"                },
+    { LLM_KV_DSPARK_CONFIDENCE_HEAD,            "%s.dspark.confidence_head"            },
+    { LLM_KV_DSPARK_CONFIDENCE_WITH_MARKOV,     "%s.dspark.confidence_head_with_markov"},
+    { LLM_KV_DSPARK_LOG_SNR_CONDITIONING,       "%s.dspark.log_snr_conditioning"       },
+    { LLM_KV_DSPARK_MIN_LOG_SNR,                "%s.dspark.min_log_snr"                },
+    { LLM_KV_DSPARK_MAX_LOG_SNR,                "%s.dspark.max_log_snr"                },
     { LLM_KV_NUM_DEEPSTACK_LAYERS,              "%s.n_deepstack_layers"                },
     { LLM_KV_DEEPSTACK_MAPPING,                 "%s.deepstack_mapping"                 },
     { LLM_KV_HIDDEN_ACT,                        "%s.hidden_activation"                 },
@@ -343,6 +352,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_TARGET_HIDDEN_SIZE,    "%s.target_hidden_size"   },
     { LLM_KV_NORM_BEFORE_RESIDUAL,  "%s.norm_before_residual" },
     { LLM_KV_NORM_BEFORE_FC,        "%s.norm_before_fc"       },
+    { LLM_KV_DECODER_ARCH,          "%s.decoder_arch"         },
 
     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
     // sentence-transformers dense modules feature dims
@@ -401,6 +411,15 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_TOKENIZER_PREFIX_ID, "tokenizer.ggml.prefix_token_id" },
     { LLM_KV_TOKENIZER_SUFFIX_ID, "tokenizer.ggml.suffix_token_id" },
     { LLM_KV_TOKENIZER_MIDDLE_ID, "tokenizer.ggml.middle_token_id" },
+
+    { LLM_KV_EAGLE3_EXTRACT_LAYERS,      "%s.extract_layers"        },
+    { LLM_KV_EAGLE3_TARGET_HIDDEN_SIZE,  "%s.target_hidden_size"    },
+    { LLM_KV_EAGLE3_NORM_BEFORE_RESIDUAL,"%s.norm_before_residual"  },
+
+    { LLM_KV_DFLASH_TARGET_LAYER_IDS,    "%s.target_layers"         },
+    { LLM_KV_DFLASH_BLOCK_SIZE,          "%s.block_size"            },
+    { LLM_KV_DFLASH_MASK_TOKEN_ID,       "%s.mask_token_id"         },
+
 };
 
 static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
@@ -454,6 +473,7 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_CLS_OUT,                                "cls.output" },
     { LLM_TENSOR_CLS_NORM,                               "cls.norm" },
     { LLM_TENSOR_ENC_OUTPUT_NORM,                        "enc.output_norm" },
+    { LLM_TENSOR_ENC_AUX_NORM,                           "enc.aux_norm" },
     { LLM_TENSOR_FFN_GATE_INP_SHEXP,                     "blk.%d.ffn_gate_inp_shexp" },
     { LLM_TENSOR_SSM_A_NOSCAN,                           "blk.%d.ssm_a" },
     { LLM_TENSOR_SSM_CONV1D,                             "blk.%d.ssm_conv1d" },
@@ -492,6 +512,23 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_ATTN_Q_A,                               "blk.%d.attn_q_a" },
     { LLM_TENSOR_ATTN_Q_B,                               "blk.%d.attn_q_b" },
     { LLM_TENSOR_ATTN_KV_A_MQA,                          "blk.%d.attn_kv_a_mqa" },
+    { LLM_TENSOR_ATTN_KV,                                "blk.%d.attn_kv" },
+    { LLM_TENSOR_ATTN_KV_NORM,                           "blk.%d.attn_kv_a_norm" },
+    { LLM_TENSOR_ATTN_OUT_A,                             "blk.%d.attn_output_a" },
+    { LLM_TENSOR_ATTN_OUT_B,                             "blk.%d.attn_output_b" },
+    { LLM_TENSOR_HC_HEAD_FN,                             "output_hc_fn" },
+    { LLM_TENSOR_HC_HEAD_BASE,                           "output_hc_base" },
+    { LLM_TENSOR_HC_HEAD_SCALE,                          "output_hc_scale" },
+    { LLM_TENSOR_HC_ATTN_FN,                             "blk.%d.hc_attn_fn" },
+    { LLM_TENSOR_HC_ATTN_BASE,                           "blk.%d.hc_attn_base" },
+    { LLM_TENSOR_HC_ATTN_SCALE,                          "blk.%d.hc_attn_scale" },
+    { LLM_TENSOR_HC_FFN_FN,                              "blk.%d.hc_ffn_fn" },
+    { LLM_TENSOR_HC_FFN_BASE,                            "blk.%d.hc_ffn_base" },
+    { LLM_TENSOR_HC_FFN_SCALE,                           "blk.%d.hc_ffn_scale" },
+    { LLM_TENSOR_ATTN_COMPRESSOR_WKV,                    "blk.%d.attn_compressor_kv" },
+    { LLM_TENSOR_ATTN_COMPRESSOR_WGATE,                  "blk.%d.attn_compressor_gate" },
+    { LLM_TENSOR_ATTN_COMPRESSOR_APE,                    "blk.%d.attn_compressor_ape" },
+    { LLM_TENSOR_ATTN_COMPRESSOR_NORM,                   "blk.%d.attn_compressor_norm" },
     { LLM_TENSOR_ATTN_KV_B,                              "blk.%d.attn_kv_b" },
     { LLM_TENSOR_ATTN_KV,                                "blk.%d.attn_kv" },
     { LLM_TENSOR_ATTN_KV_NORM,                           "blk.%d.attn_kv_a_norm" },
@@ -539,6 +576,13 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_NEXTN_HNORM,                            "blk.%d.nextn.hnorm" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,                 "blk.%d.nextn.shared_head_head" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,                 "blk.%d.nextn.shared_head_norm" },
+    { LLM_TENSOR_DSPARK_FC,                              "dspark.fc" },
+    { LLM_TENSOR_DSPARK_HIDDEN_NORM,                     "dspark.hidden_norm" },
+    { LLM_TENSOR_DSPARK_MARKOV_HEAD_A,                   "dspark.markov_head_a" },
+    { LLM_TENSOR_DSPARK_MARKOV_HEAD_B,                   "dspark.markov_head_b" },
+    { LLM_TENSOR_DSPARK_CONFIDENCE_HEAD,                 "dspark.confidence_head" },
+    { LLM_TENSOR_DSPARK_LOG_SNR_FC1,                     "dspark.log_snr_fc1" },
+    { LLM_TENSOR_DSPARK_LOG_SNR_FC2,                     "dspark.log_snr_fc2" },
     { LLM_TENSOR_ATTN_SUB_NORM,                          "blk.%d.attn_sub_norm" },
     { LLM_TENSOR_FFN_SUB_NORM,                           "blk.%d.ffn_sub_norm" },
     { LLM_TENSOR_DEC_OUTPUT_NORM,                        "dec.output_norm" },
@@ -651,6 +695,16 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DSPARK_MARKOV_W1,                       "markov_w1" },
     { LLM_TENSOR_DSPARK_MARKOV_W2,                       "markov_w2" },
     { LLM_TENSOR_DSPARK_CONF_PROJ,                       "conf_proj" },
+
+    // EAGLE3 draft model
+    { LLM_TENSOR_EAGLE3_HIDDEN_NORM,                     "blk.%d.eagle3_hidden_norm" },
+    { LLM_TENSOR_EAGLE3_FC,                              "eagle3_fc" },
+    { LLM_TENSOR_EAGLE3_D2T,                             "d2t" },
+
+    // DFlash draft model
+    { LLM_TENSOR_DFLASH_FC,                              "fc" },
+    { LLM_TENSOR_DFLASH_HIDDEN_NORM,                     "enc.output_norm" },
+
 };
 
 // declare information about the model weight tensors:
@@ -678,6 +732,7 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_OUTPUT_NORM_LFM2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_DEC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_ENC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_ENC_AUX_NORM,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_ROPE_FREQS,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
     {LLM_TENSOR_ROPE_FACTORS_LONG,          {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
     {LLM_TENSOR_ROPE_FACTORS_SHORT,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ROPE}},
@@ -903,6 +958,16 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    // dspark drafter extras. fc / markov factors are matmuls; the two norms are
+    // elementwise muls. All output-side (non-repeating) so the loader does not
+    // require a per-block index.
+    {LLM_TENSOR_DSPARK_FC,                  {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DSPARK_HIDDEN_NORM,         {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+    {LLM_TENSOR_DSPARK_MARKOV_HEAD_A,       {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DSPARK_MARKOV_HEAD_B,       {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DSPARK_CONFIDENCE_HEAD,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DSPARK_LOG_SNR_FC1,         {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DSPARK_LOG_SNR_FC2,         {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     // Nemotron 3 Super
     // latent projections feed ggml_mul_mat, the buft probe must use MUL_MAT to keep them on GPU
     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
@@ -916,6 +981,16 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
     {LLM_TENSOR_DSPARK_CONF_PROJ,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+
+    // EAGLE3
+    {LLM_TENSOR_EAGLE3_HIDDEN_NORM,                     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_EAGLE3_FC,                              {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_EAGLE3_D2T,                             {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+
+    // DFlash
+    {LLM_TENSOR_DFLASH_HIDDEN_NORM,                     {LLM_TENSOR_LAYER_INPUT,     GGML_OP_NONE}},
+    {LLM_TENSOR_DFLASH_FC,                              {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+
 };
 
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
@@ -1059,8 +1134,6 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_OLMOE:
         case LLM_ARCH_DEEPSEEK2:
         case LLM_ARCH_DEEPSEEK32:
-        case LLM_ARCH_DEEPSEEK4:
-        case LLM_ARCH_DOTS3NOTE:
         case LLM_ARCH_GLM_DSA:
         case LLM_ARCH_BITNET:
         case LLM_ARCH_T5:
@@ -1072,8 +1145,6 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_MINIMAX_M3:
         case LLM_ARCH_MISTRAL4:
         case LLM_ARCH_KIMI_LINEAR:
-        case LLM_ARCH_BAILINGMOE3:
-        case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_QWEN3TTS:
             return false;
         default:

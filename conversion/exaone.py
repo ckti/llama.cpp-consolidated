@@ -128,7 +128,6 @@ class Exaone4Model(TextModel):
 # note: transformers >= 5.1 renamed the class to "ExaoneMoeForCausalLM" (lowercase 'e'),
 #       so accept both spellings - LG AI have updated the configs of already-released models
 @ModelBase.register("ExaoneMoEForCausalLM", "ExaoneMoeForCausalLM")
-@ModelBase.example("LGAI-EXAONE/K-EXAONE-236B-A23B")
 class ExaoneMoEModel(Exaone4Model):
     model_arch = gguf.MODEL_ARCH.EXAONE_MOE
 

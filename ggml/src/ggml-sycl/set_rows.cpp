@@ -1,5 +1,6 @@
 #include "set_rows.hpp"
 #include "cpy.hpp"
+#include "turbo-quant.hpp"
 
 #include "ggml-quants.h"
 
@@ -105,137 +106,360 @@ static void set_rows_sycl_q(const char * __restrict__ src0_d,
     GGML_UNUSED(nb13);
 }
 
-template<typename blockType>
-using quantize_row_qk_t = void (*)(const float *, blockType *, int64_t);
+// ============================================================
+// TurboQuant SET_ROWS cooperative kernels (128 work-items each)
+// Ported from ggml-cuda/set-rows.cu
+// Sub-group reduction: 128/WARP_SIZE sub-groups, warp_accum[128/WARP_SIZE] SLM
+// ============================================================
 
-using quantize_rows_f_t = size_t (*)(const float *, void *, int64_t, int64_t, const float *);
+template <typename TIdx>
+static void set_rows_sycl_turbo3(ggml_backend_sycl_context & ctx,
+                                  const ggml_tensor * src0,
+                                  const ggml_tensor * src1,
+                                  ggml_tensor * dst) {
+    GGML_TENSOR_BINARY_OP_LOCALS
 
-template <typename TIn, typename TIdx, typename blockType, int qk, quantize_row_qk_t<blockType> quantize_row>
-static void set_rows_sycl_qk_host(
-        const ggml_tensor * src0,
-        const ggml_tensor * src1,
-        ggml_tensor * dst,
-        const int64_t ne00,
-        const int64_t ne01,
-        const int64_t ne02,
-        const int64_t ne03,
-        const int64_t ne11,
-        const int64_t ne12,
-        const size_t nb01,
-        const size_t nb02,
-        const size_t nb03,
-        const size_t nb10,
-        const size_t nb11,
-        const size_t nb12,
-        const size_t nb1,
-        const size_t nb2,
-        const size_t nb3,
-        queue_ptr stream) {
-    GGML_ASSERT(ne00 % qk == 0);
+    const float * src0_d = (const float *)src0->data;
+    const TIdx  * src1_d = (const TIdx *)src1->data;
+    block_turbo3_0 * dst_d = (block_turbo3_0 *)dst->data;
 
-    const size_t src0_bytes = ggml_nbytes(src0);
-    const size_t src1_bytes = ggml_nbytes(src1);
+    const int64_t s01 = nb01 / sizeof(float);
+    const int64_t s02 = nb02 / sizeof(float);
+    const int64_t s03 = nb03 / sizeof(float);
+    const int64_t s10 = nb10 / sizeof(TIdx);
+    const int64_t s11 = nb11 / sizeof(TIdx);
+    const int64_t s12 = nb12 / sizeof(TIdx);
 
-    std::vector<char> src0_host(src0_bytes);
-    std::vector<char> src1_host(src1_bytes);
+    GGML_ASSERT(ne00 % 128 == 0);
 
-    stream->memcpy(src0_host.data(), src0->data, src0_bytes);
-    stream->memcpy(src1_host.data(), src1->data, src1_bytes);
-    stream->wait();
+    const int64_t n_groups_per_row = ne00 / 128;
+    const int64_t n_groups = n_groups_per_row * ne01 * ne02 * ne03;
 
-    std::vector<float> src_row_f32(ne00);
-    const int64_t nblocks = ne00 / qk;
-    std::vector<blockType> dst_row_q(nblocks);
+    if (n_groups == 0) return;
 
-    for (int64_t i03 = 0; i03 < ne03; ++i03) {
-        for (int64_t i02 = 0; i02 < ne02; ++i02) {
-            for (int64_t i01 = 0; i01 < ne01; ++i01) {
-                const int64_t i12 = i03 % ne12;
-                const int64_t i11 = i02 % ne11;
-                const int64_t i10 = i01;
+    dpct::queue_ptr stream = ctx.stream();
 
-                const size_t src1_offset = calculate_offset<3>({ nb10, nb11, nb12 }, { i10, i11, i12 });
-                const int64_t dst_row = *(const TIdx *) (src1_host.data() + src1_offset);
+    stream->submit([&](sycl::handler & cgh) {
+        sycl::local_accessor<float, 1> x(128, cgh);
+        sycl::local_accessor<float, 1> warp_accum(128 / WARP_SIZE, cgh);
+        sycl::local_accessor<uint8_t, 1> local_idx(128, cgh);
 
-                const size_t src0_row_offset = calculate_offset<3>({ nb01, nb02, nb03 }, { i01, i02, i03 });
-                const TIn * src_row = reinterpret_cast<const TIn *>(src0_host.data() + src0_row_offset);
+        cgh.parallel_for(
+            sycl::nd_range<1>(n_groups * 128, 128),
+            [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                const int j = item.get_local_id(0);
+                const int64_t g = item.get_group(0);
+                auto sg = item.get_sub_group();
 
-                for (int64_t i00 = 0; i00 < ne00; ++i00) {
-                    src_row_f32[i00] = (float) src_row[i00];
+                const int64_t i_grp = g % n_groups_per_row;
+                int64_t tmp = g / n_groups_per_row;
+                const int64_t i01l = tmp % ne01;
+                tmp = tmp / ne01;
+                const int64_t i02l = tmp % ne02;
+                const int64_t i03l = tmp / ne02;
+
+                const int64_t i10l = i01l;
+                const int64_t i11l = i02l % ne11;
+                const int64_t i12l = i03l % ne12;
+
+                const int64_t dst_row = *(src1_d + i10l*s10 + i11l*s11 + i12l*s12);
+                // dst_row is work-group-uniform (derived from group id only, not local id j) -- safe to early-return without barrier divergence
+                if (dst_row < 0 || dst_row >= ne1) return;
+                const float * src_row = src0_d + i01l*s01 + i02l*s02 + i03l*s03;
+                block_turbo3_0 * blk = (block_turbo3_0 *)((char *)dst_d + dst_row*nb1 + i02l*nb2 + i03l*nb3) + i_grp;
+
+                x[j] = src_row[i_grp * 128 + j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                float sg_sum = sycl::reduce_over_group(sg, x[j] * x[j], sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float norm_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) norm_sq += warp_accum[i];
+                const float grp_norm = sycl::sqrt(norm_sq);
+                const float inv_norm = (grp_norm > 1e-10f) ? 1.0f / grp_norm : 0.0f;
+
+                x[j] *= inv_norm;
+                x[j] *= TURBO_WHT_SIGNS1[j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                for (int h = 1; h < 128; h *= 2) {
+                    if (j % (2*h) < h) {
+                        float a = x[j], b = x[j+h];
+                        x[j] = a + b;
+                        x[j+h] = a - b;
+                    }
+                    item.barrier(sycl::access::fence_space::local_space);
                 }
 
-                quantize_row(src_row_f32.data(), dst_row_q.data(), ne00);
+                constexpr float inv_sqrt_128 = 0.08838834764831845f;
+                x[j] = x[j] * inv_sqrt_128 * TURBO_WHT_SIGNS2[j];
 
-                const size_t dst_offset = calculate_offset<3>({ nb1, nb2, nb3 }, { dst_row, i02, i03 });
-                stream->memcpy((char *) dst->data + dst_offset, dst_row_q.data(), nblocks * sizeof(blockType));
-                stream->wait();
-            }
-        }
-    }
+                const uint8_t idx = turbo_nearest_centroid_3bit(x[j]);
+
+                local_idx[j] = idx;
+                item.barrier(sycl::access::fence_space::local_space);
+
+                if (j % 4 == 0) {
+                    blk->qs[j/4] = (local_idx[j] & 0x3)
+                                  | ((local_idx[j+1] & 0x3) << 2)
+                                  | ((local_idx[j+2] & 0x3) << 4)
+                                  | ((local_idx[j+3] & 0x3) << 6);
+                }
+                if (j % 8 == 0) {
+                    uint8_t byte = 0;
+                    for (int k = 0; k < 8; k++)
+                        byte |= ((local_idx[j+k] >> 2) & 1) << k;
+                    blk->signs[j/8] = byte;
+                }
+
+                const float c = TURBO_CENTROIDS_3BIT[idx];
+                // warp_accum reuse is safe: preceding barriers fully drain all reads before this write
+                sg_sum = sycl::reduce_over_group(sg, c * c, sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float recon_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) recon_sq += warp_accum[i];
+                const float recon_norm = sycl::sqrt(recon_sq);
+                const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+
+                if (j == 0) blk->norm = sycl::half(corrected_norm);
+            });
+    });
+
+    GGML_UNUSED(ne10);
+    GGML_UNUSED(ne13);
+    GGML_UNUSED(nb00);
+    GGML_UNUSED(nb13);
 }
 
-template <typename TIn, typename TIdx, typename blockType, int qk, quantize_rows_f_t quantize_rows>
-static void set_rows_sycl_iq_host(
-        const ggml_tensor * src0,
-        const ggml_tensor * src1,
-        ggml_tensor * dst,
-        const int64_t ne00,
-        const int64_t ne01,
-        const int64_t ne02,
-        const int64_t ne03,
-        const int64_t ne11,
-        const int64_t ne12,
-        const size_t nb01,
-        const size_t nb02,
-        const size_t nb03,
-        const size_t nb10,
-        const size_t nb11,
-        const size_t nb12,
-        const size_t nb1,
-        const size_t nb2,
-        const size_t nb3,
-        queue_ptr stream) {
-    GGML_ASSERT(ne00 % qk == 0);
+template <typename TIdx>
+static void set_rows_sycl_turbo4(ggml_backend_sycl_context & ctx,
+                                  const ggml_tensor * src0,
+                                  const ggml_tensor * src1,
+                                  ggml_tensor * dst) {
+    GGML_TENSOR_BINARY_OP_LOCALS
 
-    const size_t src0_bytes = ggml_nbytes(src0);
-    const size_t src1_bytes = ggml_nbytes(src1);
+    const float * src0_d = (const float *)src0->data;
+    const TIdx  * src1_d = (const TIdx *)src1->data;
+    block_turbo4_0 * dst_d = (block_turbo4_0 *)dst->data;
 
-    std::vector<char> src0_host(src0_bytes);
-    std::vector<char> src1_host(src1_bytes);
+    const int64_t s01 = nb01 / sizeof(float);
+    const int64_t s02 = nb02 / sizeof(float);
+    const int64_t s03 = nb03 / sizeof(float);
+    const int64_t s10 = nb10 / sizeof(TIdx);
+    const int64_t s11 = nb11 / sizeof(TIdx);
+    const int64_t s12 = nb12 / sizeof(TIdx);
 
-    stream->memcpy(src0_host.data(), src0->data, src0_bytes);
-    stream->memcpy(src1_host.data(), src1->data, src1_bytes);
-    stream->wait();
+    GGML_ASSERT(ne00 % 128 == 0);
 
-    std::vector<float> src_row_f32(ne00);
-    const int64_t nblocks = ne00 / qk;
-    std::vector<blockType> dst_row_q(nblocks);
+    const int64_t n_blocks_per_row = ne00 / 128;
+    const int64_t n_groups = n_blocks_per_row * ne01 * ne02 * ne03;
 
-    for (int64_t i03 = 0; i03 < ne03; ++i03) {
-        for (int64_t i02 = 0; i02 < ne02; ++i02) {
-            for (int64_t i01 = 0; i01 < ne01; ++i01) {
-                const int64_t i12 = i03 % ne12;
-                const int64_t i11 = i02 % ne11;
-                const int64_t i10 = i01;
+    if (n_groups == 0) return;
 
-                const size_t src1_offset = calculate_offset<3>({ nb10, nb11, nb12 }, { i10, i11, i12 });
-                const int64_t dst_row = *(const TIdx *) (src1_host.data() + src1_offset);
+    dpct::queue_ptr stream = ctx.stream();
 
-                const size_t src0_row_offset = calculate_offset<3>({ nb01, nb02, nb03 }, { i01, i02, i03 });
-                const TIn * src_row = reinterpret_cast<const TIn *>(src0_host.data() + src0_row_offset);
+    stream->submit([&](sycl::handler & cgh) {
+        sycl::local_accessor<float, 1> x(128, cgh);
+        sycl::local_accessor<float, 1> warp_accum(128 / WARP_SIZE, cgh);
+        sycl::local_accessor<uint8_t, 1> local_idx(128, cgh);
 
-                for (int64_t i00 = 0; i00 < ne00; ++i00) {
-                    src_row_f32[i00] = (float) src_row[i00];
+        cgh.parallel_for(
+            sycl::nd_range<1>(n_groups * 128, 128),
+            [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                const int j = item.get_local_id(0);
+                const int64_t g = item.get_group(0);
+                auto sg = item.get_sub_group();
+
+                const int64_t i_blk = g % n_blocks_per_row;
+                int64_t tmp = g / n_blocks_per_row;
+                const int64_t i01l = tmp % ne01;
+                tmp = tmp / ne01;
+                const int64_t i02l = tmp % ne02;
+                const int64_t i03l = tmp / ne02;
+
+                const int64_t i10l = i01l;
+                const int64_t i11l = i02l % ne11;
+                const int64_t i12l = i03l % ne12;
+
+                const int64_t dst_row = *(src1_d + i10l*s10 + i11l*s11 + i12l*s12);
+                // dst_row is work-group-uniform (derived from group id only, not local id j) -- safe to early-return without barrier divergence
+                if (dst_row < 0 || dst_row >= ne1) return;
+                const float * src_row = src0_d + i01l*s01 + i02l*s02 + i03l*s03;
+                block_turbo4_0 * blk = (block_turbo4_0 *)((char *)dst_d + dst_row*nb1 + i02l*nb2 + i03l*nb3) + i_blk;
+
+                x[j] = src_row[i_blk * 128 + j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                float sg_sum = sycl::reduce_over_group(sg, x[j] * x[j], sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float norm_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) norm_sq += warp_accum[i];
+                const float grp_norm = sycl::sqrt(norm_sq);
+                const float inv_norm = (grp_norm > 1e-10f) ? 1.0f / grp_norm : 0.0f;
+
+                x[j] *= inv_norm;
+                x[j] *= TURBO_WHT_SIGNS1[j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                for (int h = 1; h < 128; h *= 2) {
+                    if (j % (2*h) < h) {
+                        float a = x[j], b = x[j+h];
+                        x[j] = a + b;
+                        x[j+h] = a - b;
+                    }
+                    item.barrier(sycl::access::fence_space::local_space);
                 }
 
-                quantize_rows(src_row_f32.data(), dst_row_q.data(), 1, ne00, nullptr);
+                constexpr float inv_sqrt_128 = 0.08838834764831845f;
+                x[j] = x[j] * inv_sqrt_128 * TURBO_WHT_SIGNS2[j];
 
-                const size_t dst_offset = calculate_offset<3>({ nb1, nb2, nb3 }, { dst_row, i02, i03 });
-                stream->memcpy((char *) dst->data + dst_offset, dst_row_q.data(), nblocks * sizeof(blockType));
-                stream->wait();
-            }
-        }
-    }
+                const uint8_t idx = turbo_nearest_centroid_4bit(x[j]);
+
+                local_idx[j] = idx;
+                item.barrier(sycl::access::fence_space::local_space);
+
+                if (j % 2 == 0) {
+                    blk->qs[j/2] = (local_idx[j] & 0xF) | ((local_idx[j+1] & 0xF) << 4);
+                }
+
+                const float c = TURBO_CENTROIDS_4BIT[idx];
+                // warp_accum reuse is safe: preceding barriers fully drain all reads before this write
+                sg_sum = sycl::reduce_over_group(sg, c * c, sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float recon_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) recon_sq += warp_accum[i];
+                const float recon_norm = sycl::sqrt(recon_sq);
+                const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+
+                if (j == 0) {
+                    blk->norm = sycl::half(corrected_norm);
+                }
+            });
+    });
+
+    GGML_UNUSED(ne10);
+    GGML_UNUSED(ne13);
+    GGML_UNUSED(nb00);
+    GGML_UNUSED(nb13);
+}
+
+template <typename TIdx>
+static void set_rows_sycl_turbo2(ggml_backend_sycl_context & ctx,
+                                  const ggml_tensor * src0,
+                                  const ggml_tensor * src1,
+                                  ggml_tensor * dst) {
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const float * src0_d = (const float *)src0->data;
+    const TIdx  * src1_d = (const TIdx *)src1->data;
+    block_turbo2_0 * dst_d = (block_turbo2_0 *)dst->data;
+
+    const int64_t s01 = nb01 / sizeof(float);
+    const int64_t s02 = nb02 / sizeof(float);
+    const int64_t s03 = nb03 / sizeof(float);
+    const int64_t s10 = nb10 / sizeof(TIdx);
+    const int64_t s11 = nb11 / sizeof(TIdx);
+    const int64_t s12 = nb12 / sizeof(TIdx);
+
+    GGML_ASSERT(ne00 % 128 == 0);
+
+    const int64_t n_groups_per_row = ne00 / 128;
+    const int64_t n_groups = n_groups_per_row * ne01 * ne02 * ne03;
+
+    if (n_groups == 0) return;
+
+    dpct::queue_ptr stream = ctx.stream();
+
+    stream->submit([&](sycl::handler & cgh) {
+        sycl::local_accessor<float, 1> x(128, cgh);
+        sycl::local_accessor<float, 1> warp_accum(128 / WARP_SIZE, cgh);
+        sycl::local_accessor<uint8_t, 1> local_idx(128, cgh);
+
+        cgh.parallel_for(
+            sycl::nd_range<1>(n_groups * 128, 128),
+            [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                const int j = item.get_local_id(0);
+                const int64_t g = item.get_group(0);
+                auto sg = item.get_sub_group();
+
+                const int64_t i_grp = g % n_groups_per_row;
+                int64_t tmp = g / n_groups_per_row;
+                const int64_t i01l = tmp % ne01;
+                tmp = tmp / ne01;
+                const int64_t i02l = tmp % ne02;
+                const int64_t i03l = tmp / ne02;
+
+                const int64_t i10l = i01l;
+                const int64_t i11l = i02l % ne11;
+                const int64_t i12l = i03l % ne12;
+
+                const int64_t dst_row = *(src1_d + i10l*s10 + i11l*s11 + i12l*s12);
+                // dst_row is work-group-uniform (derived from group id only, not local id j) -- safe to early-return without barrier divergence
+                if (dst_row < 0 || dst_row >= ne1) return;
+                const float * src_row = src0_d + i01l*s01 + i02l*s02 + i03l*s03;
+                block_turbo2_0 * blk = (block_turbo2_0 *)((char *)dst_d + dst_row*nb1 + i02l*nb2 + i03l*nb3) + i_grp;
+
+                x[j] = src_row[i_grp * 128 + j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                float sg_sum = sycl::reduce_over_group(sg, x[j] * x[j], sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float norm_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) norm_sq += warp_accum[i];
+                const float grp_norm = sycl::sqrt(norm_sq);
+                const float inv_norm = (grp_norm > 1e-10f) ? 1.0f / grp_norm : 0.0f;
+
+                x[j] *= inv_norm;
+                x[j] *= TURBO_WHT_SIGNS1[j];
+                item.barrier(sycl::access::fence_space::local_space);
+
+                for (int h = 1; h < 128; h *= 2) {
+                    if (j % (2*h) < h) {
+                        float a = x[j], b = x[j+h];
+                        x[j] = a + b;
+                        x[j+h] = a - b;
+                    }
+                    item.barrier(sycl::access::fence_space::local_space);
+                }
+
+                constexpr float inv_sqrt_128 = 0.08838834764831845f;
+                x[j] = x[j] * inv_sqrt_128 * TURBO_WHT_SIGNS2[j];
+
+                const uint8_t idx = turbo_nearest_centroid_2bit(x[j]);
+
+                local_idx[j] = idx;
+                item.barrier(sycl::access::fence_space::local_space);
+
+                if (j % 4 == 0) {
+                    blk->qs[j/4] = (local_idx[j] & 0x3)
+                                  | ((local_idx[j+1] & 0x3) << 2)
+                                  | ((local_idx[j+2] & 0x3) << 4)
+                                  | ((local_idx[j+3] & 0x3) << 6);
+                }
+
+                const float c = TURBO_CENTROIDS_2BIT[idx];
+                // warp_accum reuse is safe: preceding barriers fully drain all reads before this write
+                sg_sum = sycl::reduce_over_group(sg, c * c, sycl::plus<float>());
+                if (sg.get_local_id()[0] == 0) warp_accum[sg.get_group_id()[0]] = sg_sum;
+                item.barrier(sycl::access::fence_space::local_space);
+                float recon_sq = 0.0f;
+                for (int i = 0; i < 128 / WARP_SIZE; i++) recon_sq += warp_accum[i];
+                const float recon_norm = sycl::sqrt(recon_sq);
+                const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+
+                if (j == 0) blk->norm = sycl::half(corrected_norm);
+            });
+    });
+
+    GGML_UNUSED(ne10);
+    GGML_UNUSED(ne13);
+    GGML_UNUSED(nb00);
+    GGML_UNUSED(nb13);
 }
 
 template<typename TIn, typename TIdx, typename TOut>
@@ -545,6 +769,16 @@ static void set_rows_sycl(ggml_backend_sycl_context & ctx, const ggml_tensor * s
                 nb1, nb2, nb3,
                 stream);
             break;
+        case GGML_TYPE_TURBO2_0:
+            set_rows_sycl_turbo2<TIdx>(ctx, src0, src1, dst);
+            break;
+        case GGML_TYPE_TURBO3_0:
+            set_rows_sycl_turbo3<TIdx>(ctx, src0, src1, dst);
+            break;
+        case GGML_TYPE_TURBO4_0:
+            set_rows_sycl_turbo4<TIdx>(ctx, src0, src1, dst);
+            break;
+
         default:
             GGML_ABORT("Unsupported tensor type!");
             break;
@@ -556,7 +790,8 @@ void ggml_sycl_op_set_rows(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32 || dst->src[0]->type == GGML_TYPE_F16);
+    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->src[0]->nb[0] == sizeof(float));
     GGML_ASSERT(dst->src[1]->type == GGML_TYPE_I64 || dst->src[1]->type == GGML_TYPE_I32);
 
     // dispatch on the index type (src1) and the source value type (src0)

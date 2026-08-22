@@ -121,7 +121,32 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-f16-f16.cu
             template-instances/fattn-vec-instance-q4_0-q4_0.cu
             template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            template-instances/fattn-vec-instance-bf16-bf16.cu)
+            template-instances/fattn-vec-instance-bf16-bf16.cu
+            template-instances/fattn-vec-instance-f16-q8_0.cu
+            template-instances/fattn-vec-instance-q8_0-f16.cu
+            template-instances/fattn-vec-instance-bf16-q8_0.cu
+            template-instances/fattn-vec-instance-q8_0-bf16.cu
+            template-instances/fattn-vec-instance-turbo3_0-turbo3_0.cu
+            template-instances/fattn-vec-instance-turbo3_0-q8_0.cu
+            template-instances/fattn-vec-instance-q8_0-turbo3_0.cu
+            template-instances/fattn-vec-instance-f16-turbo3_0.cu
+            template-instances/fattn-vec-instance-turbo3_0-f16.cu
+            template-instances/fattn-vec-instance-turbo2_0-turbo2_0.cu
+            template-instances/fattn-vec-instance-turbo2_0-q8_0.cu
+            template-instances/fattn-vec-instance-q8_0-turbo2_0.cu
+            template-instances/fattn-vec-instance-f16-turbo2_0.cu
+            template-instances/fattn-vec-instance-turbo2_0-f16.cu
+            template-instances/fattn-vec-instance-turbo3_0-turbo2_0.cu
+            template-instances/fattn-vec-instance-turbo2_0-turbo3_0.cu
+            template-instances/fattn-vec-instance-turbo4_0-turbo4_0.cu
+            template-instances/fattn-vec-instance-turbo4_0-q8_0.cu
+            template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
+            template-instances/fattn-vec-instance-f16-turbo4_0.cu
+            template-instances/fattn-vec-instance-turbo4_0-f16.cu
+            template-instances/fattn-vec-instance-turbo4_0-turbo3_0.cu
+            template-instances/fattn-vec-instance-turbo3_0-turbo4_0.cu
+            template-instances/fattn-vec-instance-turbo4_0-turbo2_0.cu
+            template-instances/fattn-vec-instance-turbo2_0-turbo4_0.cu)
     endif()
 
     ggml_add_backend_library(ggml-cuda
@@ -137,6 +162,18 @@ if (CUDAToolkit_FOUND)
 
     if (GGML_CUDA_FORCE_MMQ)
         add_compile_definitions(GGML_CUDA_FORCE_MMQ)
+    endif()
+
+    if (GGML_CUDA_HOPPER_Q1)
+        # opt-in Hopper (sm_90a) wgmma path for Q1_0/Q2_0 prefill; needs CUTLASS headers (CuTe)
+        if (NOT GGML_CUDA_CUTLASS_DIR)
+            message(FATAL_ERROR "GGML_CUDA_HOPPER_Q1 requires GGML_CUDA_CUTLASS_DIR (CUTLASS checkout root)")
+        endif()
+        target_compile_definitions(ggml-cuda PRIVATE GGML_USE_HOPPER_Q1)
+        target_include_directories(ggml-cuda PRIVATE
+            ${GGML_CUDA_CUTLASS_DIR}/include
+            ${GGML_CUDA_CUTLASS_DIR}/tools/util/include)
+        target_compile_options(ggml-cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
     endif()
 
     if (GGML_CUDA_FORCE_CUBLAS)
@@ -207,7 +244,8 @@ if (CUDAToolkit_FOUND)
         # - speed (nvcc's default)
         # - balance
         # - size
-        list(APPEND CUDA_FLAGS -compress-mode=${GGML_CUDA_COMPRESSION_MODE})
+        # Disabled: -compress-mode causes issues with GCC 12 host compiler
+        # list(APPEND CUDA_FLAGS -compress-mode=${GGML_CUDA_COMPRESSION_MODE})
     endif()
 
     if (GGML_FATAL_WARNINGS)

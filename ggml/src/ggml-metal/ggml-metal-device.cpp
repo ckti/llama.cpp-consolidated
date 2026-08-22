@@ -5,6 +5,7 @@
 #include "ggml-impl.h"
 
 #include <cassert>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -477,23 +478,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_soft_max(ggml_me
     return res;
 }
 
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_lightning_indexer(
-        ggml_metal_library_t lib,
-        const ggml_tensor * op) {
-    GGML_ASSERT(op->op == GGML_OP_LIGHTNING_INDEXER);
-
-    char name[256];
-
-    snprintf(name, 256, "kernel_lightning_indexer_%s", ggml_type_name(op->src[1]->type));
-
-    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
-    if (!res.pipeline) {
-        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
-    }
-
-    return res;
-}
-
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_dsv4_hc(ggml_metal_library_t lib, ggml_op op) {
     const char * name = nullptr;
 
@@ -635,7 +619,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
     return res;
 }
 
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op) {
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op, bool write_rows) {
     char base[256];
     char name[256];
 
@@ -643,8 +627,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(
     const int ne20 = op->src[2]->ne[0]; // S_v
     const int ne21 = op->src[2]->ne[1]; // H
     const int ne30 = op->src[3]->ne[0]; // G
-    // state is src[5], 4D [S_v, S_v, H_v, n_seqs] (s0 only); K is op param 0.
+    // K (snapshot slot count) comes from op_params: in rows mode src[5] is the
+    // 2D cache view, so its ne[1] is the cache row count, not K.
     const int K = ggml_get_op_params_i32(op, 0);
+    // rows mode: src[6] holds per-seq cache row indices for the state read
+    const bool has_rows = op->src[6] != NULL;
 
     const int nsg = op->src[2]->ne[0]/32;
 
@@ -653,7 +640,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(
     GGML_ASSERT(ne20 % 32 == 0);
 
     snprintf(base, 256, "kernel_gated_delta_net_%s_%d", ggml_type_name(op->src[0]->type), nsg);
-    snprintf(name, 256, "%s_ne20=%d_ne30=%d_K=%d", base, ne20, ne30, K);
+    snprintf(name, 256, "%s_ne20=%d_ne30=%d_K=%d_rows=%d_write_rows=%d", base, ne20, ne30, K, has_rows ? 1 : 0, write_rows ? 1 : 0);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
     if (!res.pipeline) {
@@ -662,6 +649,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(
         ggml_metal_cv_set_int16(cv, ne20, FC_GATED_DELTA_NET + 0);
         ggml_metal_cv_set_int16(cv, ne30, FC_GATED_DELTA_NET + 1);
         ggml_metal_cv_set_int16(cv, K,    FC_GATED_DELTA_NET + 2);
+        ggml_metal_cv_set_bool (cv, has_rows, FC_GATED_DELTA_NET + 3);
+        ggml_metal_cv_set_bool (cv, write_rows, FC_GATED_DELTA_NET_WRITE_ROWS);
 
         res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
 
@@ -699,6 +688,22 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri(ggml_m
 
     res.nsg  = nsg;
     res.smem = GGML_PAD(GGML_PAD(n, 32)*nsg*sizeof(float), 16);
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_turbo_wht(ggml_metal_library_t lib) {
+    const char * name = "kernel_turbo_wht";
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        ggml_metal_cv_t cv = ggml_metal_cv_init();
+        res = ggml_metal_library_compile_pipeline(lib, name, name, cv);
+        ggml_metal_cv_free(cv);
+    }
+
+    res.nsg = 1;
+    res.smem = 0;
 
     return res;
 }
@@ -798,6 +803,58 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
     return res;
 }
 
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_nb(ggml_metal_library_t lib, const ggml_tensor * op, int nb, int nk) {
+    GGML_ASSERT(ggml_metal_device_get_props(ggml_metal_library_get_device(lib))->has_tensor);
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_Q1_0);
+    GGML_ASSERT(nb == 16 || nb == 32);
+    GGML_ASSERT(nk == 2  || nk == 4 || nk == 8);
+    if (nb == 32) {
+        nk = 2; // only nb16 has larger K-tile instantiations (k64/k128)
+    }
+
+    char base[256];
+    char name[256];
+
+    // A-tile height (GGML_METAL_Q1_0_NB_A: 32/64/128, nb16 only)
+    static const int nra_env = getenv("GGML_METAL_Q1_0_NB_A") ? atoi(getenv("GGML_METAL_Q1_0_NB_A")) : 64;
+    const int nra = nb == 16 ? nra_env : 64;
+    const int nsg = nra == 128 ? 4 : 2;
+
+    GGML_ASSERT(op->src[1]->ne[2] <= INT16_MAX && op->src[1]->ne[3] <= INT16_MAX);
+    const int16_t ne12 = (int16_t) op->src[1]->ne[2];
+    const int16_t ne13 = (int16_t) op->src[1]->ne[3];
+    const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
+    const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
+
+    if (nra == 64) {
+        snprintf(base, 256, "kernel_mul_mm_nb%d_k%d_%s_%s", nb, 16*nk, ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
+    } else {
+        snprintf(base, 256, "kernel_mul_mm_nb%da%d_k%d_%s_%s", nb, nra, 16*nk, ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
+    }
+    snprintf(name, 256, "%s_ne12=%d_ne13=%d_r2=%d_r3=%d", base, ne12, ne13, r2, r3);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        ggml_metal_cv_t cv = ggml_metal_cv_init();
+
+        ggml_metal_cv_set_int16(cv, ne12,  FC_MUL_MM + 2);
+        ggml_metal_cv_set_int16(cv, ne13,  FC_MUL_MM + 3);
+        ggml_metal_cv_set_int16(cv, r2,    FC_MUL_MM + 4);
+        ggml_metal_cv_set_int16(cv, r3,    FC_MUL_MM + 5);
+
+        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
+
+        ggml_metal_cv_free(cv);
+    }
+
+    res.nr0  = nra;
+    res.nr1  = nb;
+    res.nsg  = nsg;
+    res.smem = (size_t) nra * (16*nk) * sizeof(ggml_fp16_t);
+
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_metal_library_t lib, const ggml_tensor * op) {
     GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
     GGML_TENSOR_LOCALS( int32_t, ne1, op->src[1], ne);
@@ -839,6 +896,57 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             {
                 nsg = N_SG_Q1_0;
                 nr0 = N_R0_Q1_0;
+
+                // multi-column variants: read the streamed weights once per nr1
+                // src1 columns (mid-size batch / spec-decode verify path).
+                // GGML_METAL_Q1_0_NR1 clamps the max variant (1 disables).
+                static const int nr1_max = getenv("GGML_METAL_Q1_0_NR1") ? atoi(getenv("GGML_METAL_Q1_0_NR1")) : 0;
+
+                // measured (M5 Pro): nr1=2 is the per-pass sweet spot; nr1=3 wins for
+                // exactly 3 columns; nr1=4 variants are latency/register limited and
+                // lose to ceil(ne11/2) passes of nr1=2. GGML_METAL_Q1_0_NR1=n forces nr1.
+                const int nr1_force = nr1_max <= 4 ? nr1_max : 0;
+                if (nr1_force > 1) {
+                    nr1 = nr1_force;
+                    suffix = nr1 == 2 ? "_nr1_2" : nr1 == 3 ? "_nr1_3" : "_nr1_4";
+                } else if (nr1_max != 1 && ne11 == 3) {
+                    nr1 = 3; suffix = "_nr1_3";
+                } else if (nr1_max != 1 && ne11 >= 2) {
+                    nr1 = 2; suffix = "_nr1_2";
+                }
+            } break;
+        case GGML_TYPE_Q2_0:
+            {
+                nsg = N_SG_Q2_0;
+                nr0 = N_R0_Q2_0;
+
+                // multi-column variants, same scheme as Q1_0 above: read the
+                // streamed q2_0 weights once per nr1 src1 columns.
+                // EXPERIMENTAL, opt-in via GGML_METAL_Q2_0_NR1 (0/absent keeps
+                // the default routing, i.e. the mul_mv_ext path for ne11 2..8).
+                // Measured (M5 Pro, [4096,14336]): nr1_2 = 93.2 us at ne11=2
+                // vs 122 for the ext route (+31%); ne11=4 via 2 passes = 171
+                // vs 183. But nr1_3 = 195 vs 152 ext at ne11=3 (occupancy
+                // cliff at tpb=16) -- routing is NOT settled yet, hence opt-in.
+                static const int nr1_max = getenv("GGML_METAL_Q2_0_NR1") ? atoi(getenv("GGML_METAL_Q2_0_NR1")) : 0;
+
+                const int nr1_force = nr1_max >= 2 && nr1_max <= 4 ? nr1_max : 0;
+                if (nr1_force > 1 && ne11 >= 2) {
+                    nr1 = std::min(nr1_force, 4);
+                    suffix = nr1 == 2 ? "_nr1_2" : nr1 == 3 ? "_nr1_3" : "_nr1_4";
+                } else if (nr1_max != 1 && ne11 >= 2 && ne11 != 3) {
+                    // Default-on nr1=2 multi-column (mirrors the Q1_0 path above):
+                    // measured +31% at ne11=2 (93.2 vs 122 us) and a win at ne11=4
+                    // (2 passes, 171 vs 183). ne11==3 is carved out -- that is the
+                    // occupancy cliff (nr1_3 loses to ext) that kept this opt-in;
+                    // for 3 columns we stay on ext. GGML_METAL_Q2_0_NR1=1 disables.
+                    nr1 = 2; suffix = "_nr1_2";
+                }
+            } break;
+        case GGML_TYPE_Q2_0:
+            {
+                nsg = N_SG_Q2_0;
+                nr0 = N_R0_Q2_0;
             } break;
         case GGML_TYPE_Q2_0:
             {
@@ -870,6 +978,18 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
                 nsg = N_SG_Q8_0;
                 nr0 = N_R0_Q8_0;
                 smem = 32*sizeof(float)*N_R0_Q8_0;
+            } break;
+        case GGML_TYPE_TQ3_1S:
+            {
+                nsg = N_SG_TQ3_1S;
+                nr0 = N_R0_TQ3_1S;
+                smem = 32*sizeof(float)*N_R0_TQ3_1S;
+            } break;
+        case GGML_TYPE_TQ4_1S:
+            {
+                nsg = N_SG_TQ4_1S;
+                nr0 = N_R0_TQ4_1S;
+                smem = 32*sizeof(float)*N_R0_TQ4_1S;
             } break;
         case GGML_TYPE_MXFP4:
             {
@@ -994,6 +1114,92 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
     return res;
 }
 
+// TQ3_1S / TQ4_1S rotated variant: uses dequantize_*_rotated (no inverse RHT)
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    const ggml_type tsrc0 = op->src[0]->type;
+    const ggml_type tsrc1 = op->src[1]->type;
+
+    const bool bc_inp = op->src[0]->ne[0] % 32 != 0;
+    const bool bc_out = op->ne[0] % 64 != 0 || op->ne[1] % 32 != 0;
+
+    GGML_ASSERT(op->src[1]->ne[2] <= INT16_MAX && op->src[1]->ne[3] <= INT16_MAX);
+    const int16_t ne12 = (int16_t) op->src[1]->ne[2];
+    const int16_t ne13 = (int16_t) op->src[1]->ne[3];
+    const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
+    const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
+
+    snprintf(base, 256, "kernel_mul_mm_%s_rotated_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
+    snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
+             base, bc_inp, bc_out, ne12, ne13, r2, r3);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        ggml_metal_cv_t cv = ggml_metal_cv_init();
+
+        ggml_metal_cv_set_bool(cv, bc_inp, FC_MUL_MM + 0);
+        ggml_metal_cv_set_bool(cv, bc_out, FC_MUL_MM + 1);
+        ggml_metal_cv_set_int16(cv, ne12,  FC_MUL_MM + 2);
+        ggml_metal_cv_set_int16(cv, ne13,  FC_MUL_MM + 3);
+        ggml_metal_cv_set_int16(cv, r2,    FC_MUL_MM + 4);
+        ggml_metal_cv_set_int16(cv, r3,    FC_MUL_MM + 5);
+
+        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
+
+        ggml_metal_cv_free(cv);
+    }
+
+    res.smem = bc_out ? 8192 : 4096 + 2048;
+
+    return res;
+}
+
+// TQ3_1S / TQ4_1S rotated MUL_MAT_ID variant
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    const ggml_type tsrc0 = op->src[0]->type;
+    const ggml_type tsrc1 = op->src[1]->type;
+
+    const bool bc_inp = op->src[0]->ne[0] % 32 != 0;
+
+    snprintf(base, 256, "kernel_mul_mm_id_%s_rotated_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
+    snprintf(name, 256, "%s_bci=%d", base, bc_inp);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        ggml_metal_cv_t cv = ggml_metal_cv_init();
+
+        ggml_metal_cv_set_bool(cv, bc_inp, FC_MUL_MM + 0);
+
+        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
+
+        ggml_metal_cv_free(cv);
+    }
+
+    res.smem = 8192;
+
+    return res;
+}
+
+// TQ3_1S / TQ4_1S activation pre-rotation pipeline (shared by both)
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_tq3_rotate_act(ggml_metal_library_t lib, bool inverse) {
+    char name[256];
+    const char * base = inverse ? "kernel_tq3_unrotate_act" : "kernel_tq3_rotate_act";
+
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0(ggml_metal_library_t lib, int ne02, int ne20) {
     char base[256];
     char name[256];
@@ -1006,7 +1212,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0(g
         res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
     }
 
+    // Graph reservation may pass worst-case ne20=ne02 (e.g. 256*256*2=128KB).
+    // At runtime ne20 is the actual n_expert_used (e.g. 8), keeping shmem within limits.
+    // Cap to 32KB (Apple Silicon threadgroup memory limit) to prevent reservation assert
+    // on high-expert-count MoE models (Qwen3.5-35B with 256 experts).
     res.smem = (size_t) ne02*ne20*sizeof(uint16_t);
+    if (res.smem > 32768) {
+        res.smem = 32768;
+    }
 
     return res;
 }
@@ -1104,6 +1317,18 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
                 nsg = N_SG_Q8_0;
                 nr0 = N_R0_Q8_0;
                 smem = 32*sizeof(float)*N_R0_Q8_0;
+            } break;
+        case GGML_TYPE_TQ3_1S:
+            {
+                nsg = N_SG_TQ3_1S;
+                nr0 = N_R0_TQ3_1S;
+                smem = 32*sizeof(float)*N_R0_TQ3_1S;
+            } break;
+        case GGML_TYPE_TQ4_1S:
+            {
+                nsg = N_SG_TQ4_1S;
+                nr0 = N_R0_TQ4_1S;
+                smem = 32*sizeof(float)*N_R0_TQ4_1S;
             } break;
         case GGML_TYPE_MXFP4:
             {
@@ -1494,11 +1719,16 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
     // do bounds checks for the mask?
     const bool bc_mask = op->src[3] && (op->src[3]->ne[1] % 8 != 0);
 
-    snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d",
+    // Asymmetric K/V: always encode both K and V types in the pipeline name.
+    // Symmetric case: ktype == vtype, so the name just has the type twice.
+    // This avoids ambiguity if a type name contains underscores (e.g. q4_0).
+    snprintf(base, 256, "kernel_%s_k%s_v%s_dk%d_dv%d",
             "flash_attn_ext",
-            type,
+            ggml_type_name(op->src[1]->type),
+            ggml_type_name(op->src[2]->type),
             dk,
             dv);
+
 
     snprintf(name, 256, "%s_mask=%d_sinks=%d_bias=%d_scap=%d_kvpad=%d_bcm=%d_ns10=%d_ns20=%d_nsg=%d",
             base,
@@ -1559,11 +1789,15 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_v
 
     const char * type = use_kv_f16 ? "f16" : ggml_type_name(op->src[1]->type);
 
-    snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d",
+    // Asymmetric K/V: always encode both K and V types in the pipeline name.
+    // Uses k/v prefix to avoid ambiguity with type names containing underscores.
+    snprintf(base, 256, "kernel_%s_k%s_v%s_dk%d_dv%d",
             "flash_attn_ext_vec",
-            type,
+            ggml_type_name(op->src[1]->type),
+            ggml_type_name(op->src[2]->type),
             dk,
             dv);
+
 
     snprintf(name, 256, "%s_mask=%d_sink=%d_bias=%d_scap=%d_kvpad=%d_ns10=%d_ns20=%d_nsg=%d_nwg=%d",
             base,

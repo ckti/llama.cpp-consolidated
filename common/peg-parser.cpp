@@ -14,6 +14,7 @@
 #include <regex>
 #include <set>
 #include <stdexcept>
+#include <unordered_set>
 
 // Trick to catch missing branches
 template <typename T>
@@ -1412,6 +1413,89 @@ static std::string gbnf_char_class(const std::vector<uint32_t> & chars, bool neg
         s += gbnf_escape_char_class(ch);
     }
     return s + "]";
+}
+
+struct gbnf_prefix_next_piece {
+    std::vector<uint32_t> prefix;
+    std::vector<uint32_t> next_chars;
+};
+
+static void gbnf_collect_prefix_and_next(
+        const common_trie & trie,
+        size_t              node,
+        std::vector<uint32_t> & prefix,
+        std::vector<gbnf_prefix_next_piece> & out) {
+    const auto & tnode = trie.nodes[node];
+    if (tnode.pattern < 0 && !tnode.children.empty()) {
+        gbnf_prefix_next_piece piece;
+        piece.prefix = prefix;
+        for (const auto & child : tnode.children) {
+            piece.next_chars.push_back(child.first);
+        }
+        out.push_back(std::move(piece));
+    }
+
+    for (const auto & child : tnode.children) {
+        prefix.push_back(child.first);
+        gbnf_collect_prefix_and_next(trie, child.second, prefix, out);
+        prefix.pop_back();
+    }
+}
+
+static std::vector<gbnf_prefix_next_piece> gbnf_collect_prefix_and_next(const common_trie & trie) {
+    std::vector<gbnf_prefix_next_piece> out;
+    std::vector<uint32_t> prefix;
+    gbnf_collect_prefix_and_next(trie, 0, prefix, out);
+    return out;
+}
+
+static std::string gbnf_excluding_pattern(const std::vector<std::string> & strings) {
+    common_trie matcher(strings);
+    auto pieces = gbnf_collect_prefix_and_next(matcher);
+
+    std::string pattern;
+    std::string trailing;  // optional proper-prefix of a delimiter, allowed only at the very end
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        if (i > 0) {
+            pattern += " | ";
+        }
+
+        const auto & pre = pieces[i].prefix;
+        const auto & chars = pieces[i].next_chars;
+
+        std::string cls;
+        cls.reserve(chars.size());
+        for (uint32_t ch : chars) {
+            cls += gbnf_escape_char_class(ch);
+        }
+
+        if (!pre.empty()) {
+            std::string pre_literal = gbnf_format_literal(common_unicode_cpts_to_utf8(pre));
+            pattern += pre_literal + " [^" + cls + "]";
+            // Each interior alternative consumes a delimiter-prefix plus a disambiguating
+            // char, so the repetition alone cannot match a value that *ends* on a proper
+            // prefix of a delimiter (e.g. a trailing "\n" when the delimiter is
+            // "\n</parameter>\n"). The runtime until() (greedy first-match) accepts such
+            // values, so without this the grammar would reject input the parser accepts.
+            // Allow the value to terminate on any proper prefix as an optional tail.
+            // This makes the grammar a slight superset of the runtime language (a value
+            // may end on the longest prefix, which greedy first-match would not itself
+            // produce); harmless for constrained generation, which only needs to admit
+            // every runtime-valid string.
+            if (!trailing.empty()) {
+                trailing += " | ";
+            }
+            trailing += pre_literal;
+        } else {
+            pattern += "[^" + cls + "]";
+        }
+    }
+
+    std::string result = "(" + pattern + ")*";
+    if (!trailing.empty()) {
+        result += " (" + trailing + ")?";
+    }
+    return result;
 }
 
 static std::string gbnf_ac_grammar(

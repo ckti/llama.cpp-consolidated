@@ -368,7 +368,6 @@ class _QwenMtpMixin:
 
 
 @ModelBase.register("Qwen3NextForCausalLM")
-@ModelBase.example("Qwen/Qwen3-Next-80B-A3B-Instruct")
 class Qwen3NextModel(_QwenMtpMixin, Qwen2MoeModel):
     model_arch = gguf.MODEL_ARCH.QWEN3NEXT
 
@@ -628,13 +627,11 @@ class _Qwen35MRopeMixin:
 
 
 @ModelBase.register("Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM")
-@ModelBase.example("Qwen/Qwen3.5-9B")
 class Qwen3_5TextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
     model_arch = gguf.MODEL_ARCH.QWEN35
 
 
 @ModelBase.register("Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM")
-@ModelBase.example("Qwen/Qwen3.5-35B-A3B")
 class Qwen3_5MoeTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
     model_arch = gguf.MODEL_ARCH.QWEN35MOE
 
@@ -678,9 +675,10 @@ class DFlashModel(Qwen3Model):
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
 
-        block_size = self.hparams.get("block_size", 16)
-        self.gguf_writer.add_block_size(block_size)
         dflash_config = self.hparams.get("dflash_config", {})
+
+        block_size = dflash_config.get("block_size", self.hparams.get("block_size", 16))
+        self.gguf_writer.add_block_size(block_size)
 
         target_layer_ids = dflash_config.get("target_layer_ids", [])
         if target_layer_ids:
@@ -702,15 +700,7 @@ class DFlashModel(Qwen3Model):
             name = "model." + name
         return super().filter_tensors((name, gen))
 
-    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name == "model.embed_tokens.weight" and not self.hparams.get("has_embed_tokens", True):
-            return
-
-        yield from super().modify_tensors(data_torch, name, bid)
-
-
-@ModelBase.register("Qwen3DSparkModel", "DSparkDraftModel", "DSparkSpeculator", "Lfm2DSparkDraftModel")
-@ModelBase.example("satgeze/Qwen3.6-27B-DSpark")
+@ModelBase.register("Qwen3DSparkModel")
 class DSparkModel(DFlashModel):
     # DSpark = DFlash + a semi-autoregressive Markov head.
     model_arch = gguf.MODEL_ARCH.DFLASH
@@ -757,47 +747,5 @@ class DSparkModel(DFlashModel):
     def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
         if item[0] == "t2d":  # not used at runtime
             return None
-        return super().filter_tensors(item)
+        return super().filter_tensors((name, gen))
 
-    _ROPE_PERMUTE_SUFFIXES = (
-        "self_attn.q_proj.weight",
-        "self_attn.k_proj.weight",
-        "self_attn.q_norm.weight",
-        "self_attn.k_norm.weight",
-    )
-
-    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name == "model.d2t":
-            self._d2t = data_torch
-            return
-
-        if self._n_vocab_draft == self.hparams["vocab_size"] and name.endswith(("embed_tokens.weight", "lm_head.weight")):
-            return
-
-        # interleaved-rope checkpoints (rope_is_neox_style = false) -> NeoX layout: per head, even dims first then odd
-        if not self.hparams.get("rope_is_neox_style", True) and name.endswith(self._ROPE_PERMUTE_SUFFIXES):
-            head_dim = self.hparams["head_dim"]
-            shape = data_torch.shape
-            data_torch = data_torch.reshape(-1, head_dim // 2, 2, *shape[1:]).transpose(1, 2).reshape(shape)
-
-        yield from super().modify_tensors(data_torch, name, bid)
-
-    def prepare_tensors(self):
-        super().prepare_tensors()
-
-        n_vocab = self.hparams["vocab_size"]
-        if self._n_vocab_draft < n_vocab and self._d2t is None:
-            raise ValueError(f"draft_vocab_size {self._n_vocab_draft} < vocab_size {n_vocab} but no d2t table found")
-
-        # write d2t as absolute target token ids
-        if self._d2t is not None:
-            data = LazyTorchTensor.to_eager(self._d2t).to(torch.int64).cpu().numpy().reshape(-1)
-            if data.size != self._n_vocab_draft:
-                raise ValueError(f"d2t size {data.size} does not match draft_vocab_size {self._n_vocab_draft}")
-            data = data + np.arange(data.size, dtype=np.int64)
-            if np.any((data < 0) | (data >= n_vocab)):
-                raise ValueError(f"d2t target ids out of range for target vocab size {n_vocab}")
-            if np.unique(data).size != data.size:
-                raise ValueError("d2t contains duplicate target ids")
-            logger.info(f"{'d2t,':<30} --> I64, shape = {{{data.size}}}")
-            self.gguf_writer.add_tensor("d2t", data, raw_dtype=gguf.GGMLQuantizationType.I64)

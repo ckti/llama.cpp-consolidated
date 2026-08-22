@@ -386,4 +386,5 @@ struct common_chat_prompt_preset {
 
 common_chat_prompt_preset common_chat_get_asr_prompt(const common_chat_templates * chat_templates);
 
+std::vector<common_chat_msg_span> common_chat_split_by_role(const std::string & prompt, const std::vector<common_chat_msg_delimiter> & delims);
 common_chat_msg_delimiters common_chat_msg_delimiters_parse(const nlohmann::ordered_json & delimiters);

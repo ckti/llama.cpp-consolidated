@@ -5,13 +5,7 @@ import os
 import sys
 import subprocess
 
-HTTPLIB_VERSION = "refs/tags/v0.53.1"
-
-# used by examples/gguf-hash, these repos have no release tag, so we pin a commit
-XXHASH_COMMIT      = "9f465f1ea932d6ad9a26cd77496311ffa544cd68"
-SHA1_COMMIT        = "e1e2536fcf6a8f9703be8c85d58724b408552287"
-SHA256_COMMIT      = "5e637272c13f200872d55ff579f7e2ab6c3f252f"
-ROTATE_BITS_COMMIT = "27e784942f67db44abf2115c6638e735b579acd1"
+HTTPLIB_VERSION = "refs/tags/v0.52.0"
 
 vendor = {
     "https://github.com/nlohmann/json/releases/latest/download/json.hpp":     "vendor/nlohmann/json.hpp",
@@ -101,21 +95,80 @@ patches = {
     )],
 }
 
+def _apply_wifsignaled_patch(path: str) -> None:
+    """Apply the WIFSIGNALED encoding patch — without it subprocess_join
+    and subprocess_alive collapse all signal deaths (SIGABRT, SIGTERM,
+    SIGKILL) to EXIT_FAILURE(1), making them indistinguishable from
+    normal errors.  Store the negated signal number so callers can
+    report the actual cause of death."""
+    with open(path) as f:
+        content = f.read()
+
+    # Replace the error-only else in subprocess_join
+    old = """    if (WIFEXITED(status)) {
+      process->return_status = WEXITSTATUS(status);
+    } else {
+      process->return_status = EXIT_FAILURE;
+    }"""
+    new = """    if (WIFEXITED(status)) {
+      process->return_status = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        // Store negated signal number so callers can distinguish signal death
+        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
+        // normal error exit (positive exit code) and clean exit (exit code 0).
+        process->return_status = -WTERMSIG(status);
+    } else {
+      process->return_status = EXIT_FAILURE;
+    }"""
+    content = content.replace(old, new)
+
+    # Same fix in subprocess_alive
+    old = """    if (WIFEXITED(status)) {
+        process->return_status = WEXITSTATUS(status);
+      } else {
+        process->return_status = EXIT_FAILURE;
+      }"""
+    new = """    if (WIFEXITED(status)) {
+        process->return_status = WEXITSTATUS(status);
+      } else if (WIFSIGNALED(status)) {
+        // Store negated signal number so callers can distinguish signal death
+        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
+        // normal error exit (positive exit code) and clean exit (exit code 0).
+        process->return_status = -WTERMSIG(status);
+      } else {
+        process->return_status = EXIT_FAILURE;
+      }"""
+    content = content.replace(old, new)
+
+    with open(path, "w") as f:
+        f.write(content)
+
+# TODO @ngxson : this is temporary, to be removed in the future
+patches = [
+    # https://github.com/sheredom/subprocess.h/pull/102
+    "vendor/sheredom/patch-bsd.patch",
+    # https://github.com/sheredom/subprocess.h/pull/101
+    "vendor/sheredom/patch-windows-quote-backslash.patch",
+    # https://github.com/sheredom/subprocess.h/pull/104
+    # note: must be applied after patch-bsd.patch, they touch adjacent lines
+        "vendor/sheredom/patch-glibc-older-than-2.29.patch",
+]
+
 for url, filename in vendor.items():
     print(f"downloading {url} to {filename}") # noqa: NP100
     urllib.request.urlretrieve(url, filename)
 
-for filename, replacements in patches.items():
-    print(f"patching {filename}") # noqa: NP100
-    with open(filename, "r", encoding="utf-8", newline="") as f:
-        content = f.read()
-    for old, new in replacements:
-        if content.count(old) != 1:
-            print(f"Error: cannot apply patch on {filename}, upstream code has changed") # noqa: NP100
-            sys.exit(1)
-        content = content.replace(old, new)
-    with open(filename, "w", encoding="utf-8", newline="") as f:
-        f.write(content)
+_apply_wifsignaled_patch("vendor/sheredom/subprocess.h")
+
+for patch in patches:
+    print(f"applying {patch}") # noqa: NP100
+    try:
+        subprocess.check_call([
+            "git", "apply", "--directory", os.path.dirname(patch), patch
+        ])
+    except Exception as e:
+        print(f"Error: {e}") # noqa: NP100
+        sys.exit(1)
 
 print("Splitting httplib.h...") # noqa: NP100
 try:

@@ -18,7 +18,6 @@ from .qwen import QwenModel
 
 
 @ModelBase.register("DeepseekOCRForCausalLM")
-@ModelBase.example("deepseek-ai/DeepSeek-OCR")
 class DeepseekOCRVisionModel(MmprojModel):
     # HF dynamic_preprocess() max_num, which differs per model
     preproc_max_tiles = 9
@@ -101,7 +100,6 @@ class DeepseekOCRVisionModel(MmprojModel):
 
 
 @ModelBase.register("UnlimitedOCRForCausalLM")
-@ModelBase.example("baidu/Unlimited-OCR")
 class UnlimitedOCRVisionModel(DeepseekOCRVisionModel):
     preproc_max_tiles = 32
 

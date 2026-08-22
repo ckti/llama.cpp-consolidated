@@ -155,16 +155,15 @@ public:
 
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
+    std::vector<uint32_t> get_layer_ids() const;
+    ggml_tensor * get_k_storage(int32_t il) const;
+
+    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
     bool get_has_shift() const;
 
     ggml_type type_k() const;
     ggml_type type_v() const;
-
-    std::vector<uint32_t> get_layer_ids() const;
-    ggml_tensor * get_k_storage(int32_t il) const;
-
-    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
     //
     // graph_build API
@@ -176,9 +175,35 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    // TurboQuant: get rotation matrices (stored as row-major C arrays)
+    // turbo_rotation = R (forward rotation, for Q pre-rotate-queries)
+    // turbo_rotation_inv = R^T = R^{-1} (inverse rotation, for V output un-rotation)
+    ggml_tensor * get_turbo_rotation() const { return turbo_rotation; }
+    ggml_tensor * get_turbo_rotation_inv() const { return turbo_rotation_inv; }
+
+    // TurboQuant InnerQ: per-channel scale_inv for Q/V equalization
+    ggml_tensor * get_turbo_innerq_scale_inv() const { return turbo_innerq_scale_inv; }
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
+
+    //
+    // K-cache mean-centering (see docs/kv-mean-center.md)
+    //
+
+    // load a per-layer bias file (GGUF, tensors named "kv_bar.blk.<il>.k") and enable
+    // mean-centering for every layer it covers: the bias is subtracted from the K vector
+    // right before it is written into the cache in cpy_k().
+    //
+    // when require_q4_0 is true (the default, used by the --kv-mean-center CLI flag), loading
+    // fails for any layer whose K cache type is not GGML_TYPE_Q4_0, since that is the only case
+    // this feature is intended/validated for. require_q4_0 = false is used by tests to exercise
+    // the exact same subtraction code path against an unquantized (e.g. F32) K cache, in order to
+    // validate the softmax-invariance argument without confounding it with quantization error.
+    //
+    // returns false (and logs an error) on failure; the cache is left with centering disabled.
+    bool load_kv_mean_center(const char * path, bool require_q4_0 = true);
 
     //
     // preparation API
@@ -286,8 +311,24 @@ private:
 
     std::vector<kv_layer> layers;
 
+    // TurboQuant rotation matrices (128x128, row-major stored)
+    ggml_tensor * turbo_rotation = nullptr;      // R (forward rotation)
+    ggml_tensor * turbo_rotation_inv = nullptr;   // R^T = R^{-1} (inverse rotation)
+
+    // TurboQuant InnerQ: per-channel scale_inv for Q/V equalization (128 floats)
+    ggml_tensor * turbo_innerq_scale_inv = nullptr;
+
     // model layer id -> KV cache layer id
     std::unordered_map<int32_t, int32_t> map_layer_ids;
+
+    // K-cache mean-centering bias (see load_kv_mean_center()):
+    //   k_bar[ikv] is indexed like `layers` and is nullptr for layers without a bias, or if
+    //   centering was never enabled (k_bar.empty() in that case).
+    //   each tensor is F32, shaped [n_embd_head_k(il), n_head_kv(il)] so it broadcasts against
+    //   the [n_embd_head, n_head, n_tokens] k_cur tensor seen in cpy_k().
+    std::vector<ggml_tensor *> k_bar;
+    std::vector<ggml_context_ptr> k_bar_ctxs;
+    std::vector<ggml_backend_buffer_ptr> k_bar_bufs;
 
     size_t total_size() const;
 
@@ -372,6 +413,17 @@ public:
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
+
+    // TurboQuant rotation accessors
+    ggml_tensor * get_turbo_rotation() const;
+    ggml_tensor * get_turbo_rotation_inv() const;
+
+    // Override virtual methods from llama_memory_context_i
+    ggml_tensor * get_turbo_rot_forward() const override;
+    ggml_tensor * get_turbo_rot_inverse() const override;
+
+    // TurboQuant InnerQ: per-channel scale_inv for Q/V equalization
+    ggml_tensor * get_turbo_innerq_scale_inv() const override;
 
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory

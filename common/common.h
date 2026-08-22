@@ -15,7 +15,6 @@
 #include <vector>
 #include <map>
 #include <algorithm>
-#include <fstream>
 
 #if defined(_WIN32) && !defined(_WIN32_WINNT)
 #define _WIN32_WINNT 0x0A00
@@ -106,6 +105,7 @@ enum llama_example {
     LLAMA_EXAMPLE_RESULTS,
     LLAMA_EXAMPLE_EXPORT_GRAPH_OPS,
     LLAMA_EXAMPLE_DOWNLOAD,
+    LLAMA_EXAMPLE_KV_MEAN_CENTER,
     LLAMA_EXAMPLE_TOKENIZE,
 
     LLAMA_EXAMPLE_COUNT,
@@ -172,6 +172,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
+    COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE, // MTP with adaptive draft depth
     COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH,  // DFlash speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK,  // DSpark speculative decoding (DFlash + Markov head)
     COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding based on n-grams
@@ -324,10 +325,12 @@ struct common_params_model {
 struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
+    int32_t n_min_adaptive = 3; // minimum adaptive MTP draft depth (also the starting depth)
 
     float p_split = 0.1f; // speculative decoding split probability
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
 
+    bool chain = false; // chained drafting: all n_max tokens in one GPU decode (MTP only)
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
     common_params_model mparams;
@@ -346,6 +349,12 @@ struct common_params_speculative_draft {
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+
+    bool    eagle3                = false; // use EAGLE3 speculative decoding
+    bool    dflash                = false; // use DFlash speculative decoding
+    bool    dflash_defer_injection = true;  // defer encoder KV injection to draft time (set false for higher acceptance on some models)
+    int32_t n_ctx                 = 0;     // draft context size
+
 };
 
 struct common_params_speculative_ngram_mod {
@@ -384,8 +393,22 @@ struct common_params_speculative {
     }
 
     uint32_t need_n_rs_seq() const {
+        // Both MTP and dspark verify a whole draft block against the target in
+        // one llama_decode(), then crop the target's cache back to the accepted
+        // length with a PARTIAL llama_memory_seq_rm(). On a hybrid GDN/attention
+        // target (e.g. QWEN35/QWEN35MOE) that partial removal only succeeds if
+        // the recurrent-state rollback ring (n_rs_seq) was sized up front --
+        // see llama_memory_recurrent::seq_rm()'s "partial rollback via
+        // per-token snapshot index" path and llm_arch_supports_rs_rollback().
+        // Omitting a block-verify draft type here silently leaves n_rs_seq=0,
+        // so the post-verify crop on ctx_tgt no-ops instead of failing loudly
+        // (llama_memory_hybrid::seq_rm short-circuits to `return false` without
+        // mutating either sub-cache) -- the target's GDN state then keeps
+        // absorbing every future round's rejected draft tail.
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP ||
+                   t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE ||
+                   t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
         });
 
         return needs_rs_seq ? draft.n_max : 0u;
@@ -436,6 +459,20 @@ struct lr_opt {
 };
 
 struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
+
+enum common_moe_cache_mode {
+    COMMON_MOE_CACHE_MODE_OFF,
+    COMMON_MOE_CACHE_MODE_AUTO,
+    COMMON_MOE_CACHE_MODE_ON,
+    COMMON_MOE_CACHE_MODE_SOFT,
+};
+
+struct common_moe_cache_params {
+    common_moe_cache_mode mode = COMMON_MOE_CACHE_MODE_AUTO;
+    size_t budget_mib          = 0;
+    bool mode_explicit         = false;
+    bool fit_selected          = false;
+};
 
 struct common_params {
     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
@@ -570,12 +607,17 @@ struct common_params {
     bool check_tensors     = false; // validate tensor data
     bool no_op_offload     = false; // globally disable offload host tensor operations to device
     bool no_extra_bufts    = false; // disable extra buffer types (used for weight repacking)
+    common_moe_cache_params moe_cache;
     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
 
     bool single_turn       = false; // single turn chat conversation
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+
+    // path to a K-cache mean-centering bias file (GGUF), or empty to disable.
+    // only takes effect when cache_type_k == GGML_TYPE_Q4_0; see docs/kv-mean-center.md
+    std::string kv_mean_center_path = "";
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
@@ -616,6 +658,7 @@ struct common_params {
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     std::string hostname      = "127.0.0.1";
+    std::string server_base   = ""; // base URL of an external llama-server for llama-cli                         // NOLINT
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT
     std::string chat_template = "";                                                                         // NOLINT
@@ -642,11 +685,14 @@ struct common_params {
 
     std::map<std::string, std::string> default_template_kwargs;
 
-    // CLI params
-    std::string server_base; // if set, connect to this server instead of starting a new one
-
     // UI configs
     bool ui = true;
+
+    // Deprecated: use ui, ui_mcp_proxy, ui_config_json instead
+    bool webui = ui;
+    bool webui_mcp_proxy = false;
+    std::string webui_config_json;
+
     bool ui_mcp_proxy = false;
     std::string ui_config_json;
 
@@ -675,7 +721,9 @@ struct common_params {
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
 
-    float slot_prompt_similarity = 0.1f;
+    float   slot_prompt_similarity        = 0.1f;
+    float   slot_cache_key_similarity     = 0.5f;
+    int32_t slot_cache_key_min_prefix     = 32;
 
     // batched-bench params
     bool is_pp_shared   = false;
@@ -705,7 +753,13 @@ struct common_params {
     bool process_output  = false; // collect data for the output tensor
     bool compute_ppl     = true;  // whether to compute perplexity
     bool show_statistics = false; // show imatrix statistics per tensor
-    bool parse_special   = false; // whether to parse special tokens during imatrix tokenization
+    bool parse_special   = false; // whether to parse special tokens during tokenization
+
+    // tokenize params
+    bool tokenize_stdin      = false; // read tokenizer input from stdin
+    bool tokenize_no_bos     = false; // do not add BOS token even if requested by the model
+    bool tokenize_ids        = false; // print token ids only
+    bool tokenize_show_count = false; // print total token count
 
     // cvector-generator params
     int n_pca_batch = 100;
@@ -718,12 +772,6 @@ struct common_params {
 
     // batched-bench params
     bool batched_bench_output_jsonl = false;
-
-    // tokenize params
-    bool tokenize_ids        = false; // if true, only print the token IDs
-    bool tokenize_stdin      = false; // if true, read the prompt from stdin
-    bool tokenize_no_bos     = false; // if true, do not add the BOS token
-    bool tokenize_show_count = false; // if true, print the total token count
 
     // common params
     std::string out_file; // output filename for all example programs

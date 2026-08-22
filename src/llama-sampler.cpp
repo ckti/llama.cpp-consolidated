@@ -2876,12 +2876,6 @@ struct llama_sampler_penalties : public llama_sampler_backend {
     std::vector<int32_t> host_token_ids;
     std::vector<int32_t> host_counts;
 
-    void copy_state(const llama_sampler_penalties & src) {
-        // note: inp_token_ids/inp_counts belong to the current sampling graph
-        prev        = src.prev;
-        token_count = src.token_count;
-    }
-
     static bool is_disabled(
             int32_t penalty_last_n,
             float   penalty_repeat,
@@ -3012,13 +3006,9 @@ static void llama_sampler_penalties_free(struct llama_sampler * smpl) {
 static bool llama_sampler_penalties_backend_init(
         struct llama_sampler       * smpl,
         ggml_backend_buffer_type_t   buft,
-        uint32_t                     n_outputs_max_per_seq) {
+        uint32_t                      n_outputs_max_per_seq) {
+    GGML_UNUSED(n_outputs_max_per_seq);
     auto * sctx = (llama_sampler_penalties *) smpl->ctx;
-
-    if (n_outputs_max_per_seq > 1) {
-        sctx->init(false);
-        return false;
-    }
 
     const bool res = llama_sampler_backend_support(smpl, buft);
 
@@ -3179,12 +3169,6 @@ static void llama_sampler_penalties_backend_set_input(struct llama_sampler * smp
     ggml_backend_tensor_set(sctx->inp_counts,    sctx->host_counts.data(),    0, sctx->n_max * sizeof(int32_t));
 }
 
-static void llama_sampler_penalties_backend_reset(struct llama_sampler * smpl) {
-    auto * sctx = (llama_sampler_penalties *) smpl->ctx;
-    sctx->inp_token_ids = nullptr;
-    sctx->inp_counts    = nullptr;
-}
-
 static struct llama_sampler_i llama_sampler_penalties_i = {
     /* .name              = */ llama_sampler_penalties_name,
     /* .accept            = */ llama_sampler_penalties_accept,
@@ -3196,8 +3180,6 @@ static struct llama_sampler_i llama_sampler_penalties_i = {
     /* .backend_accept    = */ nullptr,
     /* .backend_apply     = */ llama_sampler_penalties_backend_apply,
     /* .backend_set_input = */ llama_sampler_penalties_backend_set_input,
-    /* .backend_reset     = */ llama_sampler_penalties_backend_reset,
-    /* .copy_state        = */ llama_sampler_backend_copy_state<llama_sampler_penalties>,
 };
 
 struct llama_sampler * llama_sampler_init_penalties(

@@ -1508,4 +1508,3 @@ static inline void hvx_tensor_add_f32_grid(
         }
     }
 }
-

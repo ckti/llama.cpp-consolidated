@@ -73,6 +73,9 @@ struct llama_context {
 
     llama_memory_t get_memory() const;
 
+    enum ggml_type get_kv_type_k() const;
+    enum ggml_type get_kv_type_v() const;
+
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
@@ -116,6 +119,7 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
+    void set_mtp_chain(bool value);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 

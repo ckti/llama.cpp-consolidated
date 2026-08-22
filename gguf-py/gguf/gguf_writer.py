@@ -900,6 +900,33 @@ class GGUFWriter:
     def add_nextn_predict_layers(self, count: int) -> None:
         self.add_uint32(Keys.LLM.NEXTN_PREDICT_LAYERS.format(arch=self.arch), count)
 
+    def add_dspark_block_size(self, size: int) -> None:
+        self.add_uint32(Keys.LLM.DSPARK_BLOCK_SIZE.format(arch=self.arch), size)
+
+    def add_dspark_mask_token_id(self, tid: int) -> None:
+        self.add_uint32(Keys.LLM.DSPARK_MASK_TOKEN_ID.format(arch=self.arch), tid)
+
+    def add_dspark_target_layers(self, layers: Sequence[int]) -> None:
+        self.add_array(Keys.LLM.DSPARK_TARGET_LAYERS.format(arch=self.arch), list(layers))
+
+    def add_dspark_markov_rank(self, rank: int) -> None:
+        self.add_uint32(Keys.LLM.DSPARK_MARKOV_RANK.format(arch=self.arch), rank)
+
+    def add_dspark_confidence_head(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.DSPARK_CONFIDENCE_HEAD.format(arch=self.arch), value)
+
+    def add_dspark_confidence_head_with_markov(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.DSPARK_CONFIDENCE_WITH_MARKOV.format(arch=self.arch), value)
+
+    def add_dspark_log_snr_conditioning(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.DSPARK_LOG_SNR_CONDITIONING.format(arch=self.arch), value)
+
+    def add_dspark_min_log_snr(self, value: float) -> None:
+        self.add_float32(Keys.LLM.DSPARK_MIN_LOG_SNR.format(arch=self.arch), value)
+
+    def add_dspark_max_log_snr(self, value: float) -> None:
+        self.add_float32(Keys.LLM.DSPARK_MAX_LOG_SNR.format(arch=self.arch), value)
+
     def add_swin_norm(self, value: bool) -> None:
         self.add_bool(Keys.LLM.SWIN_NORM.format(arch=self.arch), value)
 
@@ -1001,6 +1028,9 @@ class GGUFWriter:
 
     def add_target_hidden_size(self, value: int) -> None:
         self.add_uint32(Keys.LLM.TARGET_HIDDEN_SIZE.format(arch=self.arch), value)
+
+    def add_decoder_arch(self, value: str) -> None:
+        self.add_string(Keys.LLM.DECODER_ARCH.format(arch=self.arch), value)
 
     def add_norm_before_residual(self, value: bool) -> None:
         self.add_bool(Keys.LLM.NORM_BEFORE_RESIDUAL.format(arch=self.arch), value)
@@ -1485,9 +1515,6 @@ class GGUFWriter:
 
     def add_gen_audio_attention_layernorm_eps(self, value: float) -> None:
         self.add_float32(Keys.ClipGenAudio.Attention.LAYERNORM_EPS, value)
-
-    def add_gen_audio_model_variant(self, value: str) -> None:
-        self.add_string(Keys.ClipGenAudio.MODEL_VARIANT, value)
 
     def add_xielu_alpha_p(self, values: Sequence[float]):
         self.add_array(Keys.xIELU.ALPHA_P, values)

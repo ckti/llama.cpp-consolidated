@@ -211,9 +211,9 @@ else (
   set "GPUS_SETTING=-sm %SPLIT_MODE%"
 )
 
-echo run cmd: ZES_ENABLE_SYSMAN=1 %BIN_FILE% -m %MODEL_FILE% -no-cnv -p "%INPUT_PROMPT%" -n 200 -e -ngl %NGL% -s %SEED% -c %CONTEXT% %GPUS_SETTING% -lv %LOG_VERBOSE% --device %SYCL_DEVICES% --load-mode auto
+echo run cmd: ZES_ENABLE_SYSMAN=1 %BIN_FILE% -m %MODEL_FILE% -no-cnv -p "%INPUT_PROMPT%" -n 200 -e -ngl %NGL% -s %SEED% -c %CONTEXT% %GPUS_SETTING% -lv %LOG_VERBOSE% --device %SYCL_DEVICES% --mmap
 set "ZES_ENABLE_SYSMAN=1"
-%BIN_FILE% -m "%MODEL_FILE%" -no-cnv -p "%INPUT_PROMPT%" -n 200 -e -ngl %NGL% -s %SEED% -c %CONTEXT% %GPUS_SETTING% -lv %LOG_VERBOSE% --device "%SYCL_DEVICES%" --load-mode auto
+%BIN_FILE% -m "%MODEL_FILE%" -no-cnv -p "%INPUT_PROMPT%" -n 200 -e -ngl %NGL% -s %SEED% -c %CONTEXT% %GPUS_SETTING% -lv %LOG_VERBOSE% --device "%SYCL_DEVICES%" --mmap
 
 endlocal
 

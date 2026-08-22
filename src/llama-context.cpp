@@ -7,6 +7,15 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-memory.h"
+#include "llama-memory-recurrent.h"
+#include "llama-memory-hybrid.h"
+#include "llama-memory-hybrid-iswa.h"
+#include "llama-kv-cache.h"
+#include "llama-kv-cache-iswa.h"
+#include "llama-kv-cache-dsa.h"
+#include "llama-kv-cache-dsa-iswa.h"
+#include "llama-kv-cache-dsv4.h"
+#include "llama-kv-cache-msa.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
@@ -110,6 +119,8 @@ llama_context::llama_context(
 
     cparams.n_threads               = params.n_threads;
     cparams.n_threads_batch         = params.n_threads_batch;
+    cparams.moe_cache_mode          = params.moe_cache_mode;
+    cparams.moe_cache_budget_mib    = params.moe_cache_budget_mib;
     cparams.yarn_ext_factor         = params.yarn_ext_factor  >= 0.0f ? params.yarn_ext_factor  : hparams.yarn_ext_factor;
     cparams.yarn_attn_factor        = params.yarn_attn_factor >= 0.0f ? params.yarn_attn_factor : hparams.yarn_attn_factor;
     cparams.yarn_beta_fast          = params.yarn_beta_fast   >= 0.0f ? params.yarn_beta_fast   : hparams.yarn_beta_fast;
@@ -117,6 +128,7 @@ llama_context::llama_context(
     cparams.embeddings              = params.embeddings;
     cparams.embeddings_nextn        = false;
     cparams.embeddings_nextn_masked = false;
+    cparams.mtp_chain               = false;
     cparams.offload_kqv             = params.offload_kqv;
     cparams.no_perf                 = params.no_perf;
     cparams.warmup                  = false;
@@ -780,6 +792,52 @@ llama_memory_t llama_context::get_memory() const {
     return memory.get();
 }
 
+static enum ggml_type llama_memory_get_kv_type(const llama_memory_i * mem, bool want_k) {
+    if (!mem) {
+        return GGML_TYPE_COUNT;
+    }
+    if (const auto * kv = dynamic_cast<const llama_kv_cache *>(mem)) {
+        return want_k ? kv->type_k() : kv->type_v();
+    }
+    if (const auto * kv = dynamic_cast<const llama_kv_cache_iswa *>(mem)) {
+        const llama_kv_cache * base = kv->get_base();
+        return base ? (want_k ? base->type_k() : base->type_v()) : GGML_TYPE_COUNT;
+    }
+    if (const auto * kv = dynamic_cast<const llama_kv_cache_dsa *>(mem)) {
+        const llama_kv_cache * mla = kv->get_mla();
+        return mla ? (want_k ? mla->type_k() : mla->type_v()) : GGML_TYPE_COUNT;
+    }
+    if (const auto * kv = dynamic_cast<const llama_kv_cache_msa *>(mem)) {
+        const llama_kv_cache * base = kv->get_base();
+        return base ? (want_k ? base->type_k() : base->type_v()) : GGML_TYPE_COUNT;
+    }
+    if (dynamic_cast<const llama_kv_cache_dsa_iswa *>(mem) ||
+            dynamic_cast<const llama_kv_cache_dsv4 *>(mem)) {
+        return GGML_TYPE_COUNT;
+    }
+    if (const auto * hy = dynamic_cast<const llama_memory_hybrid *>(mem)) {
+        const llama_kv_cache * attn = hy->get_mem_attn();
+        return attn ? (want_k ? attn->type_k() : attn->type_v()) : GGML_TYPE_COUNT;
+    }
+    if (const auto * hy = dynamic_cast<const llama_memory_hybrid_iswa *>(mem)) {
+        const llama_kv_cache_iswa * attn = hy->get_mem_attn();
+        const llama_kv_cache * base = attn ? attn->get_base() : nullptr;
+        return base ? (want_k ? base->type_k() : base->type_v()) : GGML_TYPE_COUNT;
+    }
+    if (dynamic_cast<const llama_memory_recurrent *>(mem)) {
+        return GGML_TYPE_COUNT;
+    }
+    return GGML_TYPE_COUNT;
+}
+
+enum ggml_type llama_context::get_kv_type_k() const {
+    return llama_memory_get_kv_type(memory.get(), true);
+}
+
+enum ggml_type llama_context::get_kv_type_v() const {
+    return llama_memory_get_kv_type(memory.get(), false);
+}
+
 bool llama_context::memory_update(bool optimize) {
     if (!memory) {
         return false;
@@ -1181,6 +1239,10 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
     cparams.nextn_layer_offset = offset;
 }
 
+void llama_context::set_mtp_chain(bool value) {
+    cparams.mtp_chain = value;
+}
+
 void llama_context::set_causal_attn(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -1483,7 +1545,8 @@ int llama_context::encode(const llama_batch & batch_inp) {
         GGML_ASSERT(backend_res != nullptr);
         GGML_ASSERT(logits.data != nullptr);
 
-        ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
+        const size_t logits_bytes = cparams.mtp_chain ? ggml_nbytes(t_logits) : n_tokens*n_vocab*sizeof(float);
+        ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, logits_bytes);
     }
 
     // extract embeddings
@@ -1860,7 +1923,8 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         // extract logits
-        if (logits.data && t_logits && n_outputs > 0 && needs_raw_logits(ubatch, sampling.samplers)) {
+        if (logits.data && t_logits && n_outputs > 0 &&
+                (cparams.mtp_chain || needs_raw_logits(ubatch, sampling.samplers))) {
             ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
             GGML_ASSERT(backend_res != nullptr);
             GGML_ASSERT(logits.data != nullptr);
@@ -1868,9 +1932,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
             float * logits_out = logits.data + n_outputs_prev*n_vocab;
 
             if (n_outputs) {
-                GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-                GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
-                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
+                const size_t logits_bytes = cparams.mtp_chain ? ggml_nbytes(t_logits) : n_outputs*n_vocab*sizeof(float);
+                if (!cparams.mtp_chain) {
+                    GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
+                    GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
+                }
+                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, logits_bytes);
             }
         }
 
@@ -2465,6 +2532,7 @@ llm_graph_params llama_context::graph_params(
         /*.loras       =*/ loras.get(),
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
+        /*.dspark_ctx  =*/ nullptr,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),
@@ -3538,6 +3606,9 @@ llama_context_params llama_context_default_params() {
         /*.cb_eval_user_data           =*/ nullptr,
         /*.type_k                      =*/ GGML_TYPE_F16,
         /*.type_v                      =*/ GGML_TYPE_F16,
+        /*.moe_cache_mode              =*/ LLAMA_MOE_CACHE_MODE_UNSPECIFIED,
+        /*.moe_cache_budget_mib        =*/ 0,
+        /*.path_kv_mean_center         =*/ nullptr,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
         /*.embeddings                  =*/ false,
@@ -3786,12 +3857,28 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
 }
 
+bool llama_model_supports_mtp_chain(const llama_model * model) {
+    return model != nullptr && model->arch == LLM_ARCH_QWEN35;
+}
+
+void llama_set_mtp_chain(llama_context * ctx, bool value) {
+    ctx->set_mtp_chain(value);
+}
+
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {
     if (!ctx) {
         return nullptr;
     }
 
     return ctx->get_memory();
+}
+
+enum ggml_type llama_get_kv_cache_type_k(const struct llama_context * ctx) {
+    return ctx ? ctx->get_kv_type_k() : GGML_TYPE_COUNT;
+}
+
+enum ggml_type llama_get_kv_cache_type_v(const struct llama_context * ctx) {
+    return ctx ? ctx->get_kv_type_v() : GGML_TYPE_COUNT;
 }
 
 float * llama_get_embeddings_nextn(llama_context * ctx) {
