@@ -1216,8 +1216,18 @@ private:
 
         int n_ctx_slot = llama_n_ctx_seq(ctx_tgt);
         if (n_ctx_slot > n_ctx_train) {
-            SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - capping\n", n_ctx_slot, n_ctx_train);
-            n_ctx_slot = n_ctx_train;
+            const bool has_explicit_rope_scaling =
+                params_base.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_LINEAR ||
+                params_base.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN;
+
+            if (has_explicit_rope_scaling) {
+                SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - using explicit RoPE scaling\n",
+                        n_ctx_slot, n_ctx_train);
+            } else {
+                SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - capping\n",
+                        n_ctx_slot, n_ctx_train);
+                n_ctx_slot = n_ctx_train;
+            }
         }
 
         slots.clear();
