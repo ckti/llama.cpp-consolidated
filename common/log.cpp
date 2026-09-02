@@ -319,7 +319,7 @@ public:
         }
 
         if (path) {
-            file = fopen(path, "w");
+            file = fopen(path, "a");
         } else {
             file = nullptr;
         }
