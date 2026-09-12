@@ -88,6 +88,8 @@ add_library(${TARGET}
     kv-mean-center.h
     json.cpp
     json.h
+    kv-mean-center.cpp
+    kv-mean-center.h
     llguidance.cpp
     log.cpp
     log.h

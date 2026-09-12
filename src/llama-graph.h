@@ -12,10 +12,22 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <unordered_map>
 
 struct ggml_cgraph;
 struct ggml_context;
 struct ggml_tensor;
+
+// Maps a folded model weight to the activation-side transform applied before
+// its matmul.  The optional signs tensor is null for identity sign mode.
+struct llama_hadamard_transform {
+    ggml_tensor * rot;
+    ggml_tensor * signs;
+    int64_t perm_hd = 0;
+    int64_t perm_nk = 0;
+    int64_t perm_rep = 0;
+};
+using llama_hadamard_rotations = std::unordered_map<const ggml_tensor *, llama_hadamard_transform>;
 
 struct llama_cparams;
 struct llama_layer;

@@ -23,6 +23,8 @@ constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TERNARY = 0.01f;
 // Q2_0 is a 2-bit block-scaled format (one fp16 scale per 128-element block, no zero-point), so its
 // error sits in the same band as the ternary formats rather than the k-quant 2-bit types below.
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_Q2_0 = 0.01f;
+// Prism's PQ2_0 and PTQ1_0 also use one scale over a 128-element group.
+constexpr float MAX_QUANTIZATION_TOTAL_ERROR_PRISM_128 = 0.01f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_2BITS = 0.0075f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS = 0.0040f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS = 0.0050f;
@@ -207,6 +209,7 @@ static int test_vec_dot_q(bool verbose) {
             const float max_quantization_error =
                 type == GGML_TYPE_Q1_0    ? MAX_QUANTIZATION_TOTAL_ERROR_BINARY :
                 type == GGML_TYPE_Q2_0    ? MAX_QUANTIZATION_TOTAL_ERROR_Q2_0 :
+                type == GGML_TYPE_PQ2_0 || type == GGML_TYPE_PTQ1_0 ? MAX_QUANTIZATION_TOTAL_ERROR_PRISM_128 :
                 type == GGML_TYPE_TQ1_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_TQ2_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_Q2_K    ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
@@ -238,6 +241,8 @@ static int test_vec_dot_q(bool verbose) {
                                           ? MAX_DOT_PRODUCT_ERROR_BINARY
                                           : type == GGML_TYPE_Q2_0
                                           ? MAX_DOT_PRODUCT_ERROR_Q2_0
+                                          : type == GGML_TYPE_PQ2_0 || type == GGML_TYPE_PTQ1_0
+                                          ? MAX_DOT_PRODUCT_ERROR_TERNARY
                                           : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0
                                           ? MAX_DOT_PRODUCT_ERROR_TERNARY
                                           : type == GGML_TYPE_NVFP4

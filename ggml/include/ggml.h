@@ -438,7 +438,11 @@ extern "C" {
         GGML_TYPE_Q8_CR   = 48, // Q8_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q5_CR   = 49, // Q5_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q6_CR   = 50, // Q6_K blocks of a ConvRot-rotated tensor
-        GGML_TYPE_COUNT   = 51,
+        // Prism-private formats use high IDs so they coexist with the persisted
+        // consolidated/TurboQuant IDs above.
+        GGML_TYPE_PQ2_0   = 142, // group-128 2-bit weights
+        GGML_TYPE_PTQ1_0  = 143, // group-128 ternary weights
+        GGML_TYPE_COUNT   = 144,
     };
 
     // [TAG_GGML_PREC]
@@ -497,6 +501,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q8_CR   = 29, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q5_CR   = 30, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q6_CR   = 31, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PTQ1_0  = 129, // except 1d tensors
     };
 
     // available tensor operations:
@@ -2717,6 +2723,13 @@ extern "C" {
             struct ggml_tensor  * states,
             struct ggml_tensor  * rows,
             int                   n_snap_slots);
+
+    // Attach raw beta/gate projections for backends that fuse their activation
+    // functions into the GDN kernel.  The tensors are F32 vectors of V heads.
+    GGML_API void ggml_gated_delta_net_set_raw_gates(
+            struct ggml_tensor * gdn,
+            struct ggml_tensor * dt_bias,
+            struct ggml_tensor * a);
 
     // res: [n_kv, n_batch, 1, ne3]
     //

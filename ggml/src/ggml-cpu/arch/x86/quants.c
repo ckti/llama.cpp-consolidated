@@ -585,8 +585,8 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     for (int i = 0; i < nb; i++) {
         const float d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
         float sumi = 0.0f;
-        for (int k = 0; k < 4; k++) {
-            const block_q8_0 * GGML_RESTRICT yb = &y[i * 4 + k];
+        for (int k = 0; k < qk / QK8_0; k++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[i * (qk / QK8_0) + k];
             const float d1 = GGML_CPU_FP16_TO_FP32(yb->d);
             const __m256i qy = _mm256_loadu_si256((const __m256i *) yb->qs);
             const __m128i src = _mm_loadl_epi64((const __m128i *) &x[i].qs[k * 8]); // 8 bytes
@@ -609,8 +609,8 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
         float sumi = 0.0f;
 
-        for (int k = 0; k < 4; k++) {
-            const block_q8_0 * GGML_RESTRICT yb = &y[i * 4 + k];
+        for (int k = 0; k < qk / QK8_0; k++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[i * (qk / QK8_0) + k];
             const float d1 = GGML_CPU_FP16_TO_FP32(yb->d);
             int sumi_block = 0;
 
@@ -4189,4 +4189,19 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
     UNUSED(nb);
     ggml_vec_dot_iq4_xs_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
 #endif
+}
+
+// Prism formats currently use the portable scalar kernels on x86.  Keep the
+// public CPU trait symbols available here so x86 links the same way as ARM,
+// while leaving room for architecture-specific implementations later.
+void ggml_vec_dot_pq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy,
+        size_t by, int nrc) {
+    ggml_vec_dot_pq2_0_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
+void ggml_vec_dot_ptq1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy,
+        size_t by, int nrc) {
+    ggml_vec_dot_ptq1_0_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
 }
