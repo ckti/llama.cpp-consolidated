@@ -59,6 +59,13 @@ jobs:
           git tag ${{ steps.srctag.outputs.name }} || exit 0
           git push origin ${{ steps.srctag.outputs.name }} || exit 0
 
+  build_ui:
+    name: Build UI
+    needs: create_tag
+    uses: ./.github/workflows/ui-build.yml
+    with:
+      ui_version: ${{ needs.create_tag.outputs.source_tag }}
+
   prepare_matrices:
     name: Prepare Docker matrices
     runs-on: ubuntu-24.04
@@ -150,6 +157,13 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.create_tag.outputs.source_tag }}
+
+      - name: Download prebuilt UI
+        if: ${{ matrix.config.prebuilt_ui == true }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: llama-ui.zip
+          path: tools/ui/dist
 
       - name: Set up QEMU
         if: ${{ contains(matrix.config.platforms, 'linux/amd64') }}

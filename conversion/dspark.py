@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 
-@ModelBase.register("Qwen3DSparkModel", "DSparkForCausalLM", "DsparkSpeculator")
+@ModelBase.register("DSparkForCausalLM", "DsparkSpeculator")
 class DSparkModel(TextModel):
     """Converter for the dspark speculative-decoding drafter.
 

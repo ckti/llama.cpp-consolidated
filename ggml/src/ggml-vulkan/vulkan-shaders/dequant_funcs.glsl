@@ -571,12 +571,6 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_Q2_0)
-vec2 get_dm(uint ib, uint a_offset) {
-    return vec2(float(data_a[a_offset + ib].d), 0);
-}
-#endif
-
 #if defined(DATA_A_MXFP4)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(e8m0_to_fp32(data_a[a_offset + ib].e), 0);
@@ -611,6 +605,21 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
 }
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(1, 0);
+}
+#endif
+
+#if defined(DATA_A_TQ1_0)
+float tq1_0_val(uint ib, uint e, uint a_offset) {
+    const uint bidx = tq1_0_byte_of(e);
+    const uint qbyte = uint(bidx < 48u ? data_a[a_offset + ib].qs[bidx]
+                                       : data_a[a_offset + ib].qh[bidx - 48u]);
+    return float(tq1_0_trit(qbyte, tq1_0_digit_of(e))) - 1.0;
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(tq1_0_val(ib, iqs, a_offset), tq1_0_val(ib, iqs + 1u, a_offset));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].d), 0);
 }
 #endif
 

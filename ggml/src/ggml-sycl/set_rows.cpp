@@ -780,7 +780,8 @@ static void set_rows_sycl(ggml_backend_sycl_context & ctx, const ggml_tensor * s
             break;
 
         default:
-            GGML_ABORT("Unsupported tensor type!");
+            GGML_ABORT("Unsupported tensor type: src0 %s src1 %s dst %s", ggml_type_name(dst->src[0]->type),
+                ggml_type_name(dst->src[1]->type), ggml_type_name(dst->type));
             break;
     }
 }
@@ -790,8 +791,11 @@ void ggml_sycl_op_set_rows(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);
-    GGML_ASSERT(dst->src[0]->nb[0] == sizeof(float));
+    if (dst->type == GGML_TYPE_TURBO2_0 || dst->type == GGML_TYPE_TURBO3_0 || dst->type == GGML_TYPE_TURBO4_0) {
+        GGML_ASSERT(src0->type == GGML_TYPE_F32);
+        GGML_ASSERT(src0->nb[0] == sizeof(float));
+        GGML_ASSERT(src0->ne[0] % 128 == 0);
+    }
     GGML_ASSERT(dst->src[1]->type == GGML_TYPE_I64 || dst->src[1]->type == GGML_TYPE_I32);
 
     // dispatch on the index type (src1) and the source value type (src0)

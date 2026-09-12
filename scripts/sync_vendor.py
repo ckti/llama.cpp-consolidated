@@ -5,7 +5,13 @@ import os
 import sys
 import subprocess
 
-HTTPLIB_VERSION = "refs/tags/v0.52.0"
+HTTPLIB_VERSION = "refs/tags/v0.56.0"
+
+# used by examples/gguf-hash, these repos have no release tag, so we pin a commit
+XXHASH_COMMIT      = "9f465f1ea932d6ad9a26cd77496311ffa544cd68"
+SHA1_COMMIT        = "e1e2536fcf6a8f9703be8c85d58724b408552287"
+SHA256_COMMIT      = "5e637272c13f200872d55ff579f7e2ab6c3f252f"
+ROTATE_BITS_COMMIT = "27e784942f67db44abf2115c6638e735b579acd1"
 
 vendor = {
     "https://github.com/nlohmann/json/releases/latest/download/json.hpp":     "vendor/nlohmann/json.hpp",
@@ -21,7 +27,7 @@ vendor = {
     f"https://raw.githubusercontent.com/yhirose/cpp-httplib/{HTTPLIB_VERSION}/split.py":  "split.py",
     f"https://raw.githubusercontent.com/yhirose/cpp-httplib/{HTTPLIB_VERSION}/LICENSE":   "vendor/cpp-httplib/LICENSE",
 
-    "https://raw.githubusercontent.com/sheredom/subprocess.h/9ce0d701b6fb10f8f8c4445edd31e7c60a1237e3/subprocess.h": "vendor/sheredom/subprocess.h",
+    "https://raw.githubusercontent.com/sheredom/subprocess.h/0dccaa9aa176dd6d7ef8afeca3c18d6e80a32795/subprocess.h": "vendor/sheredom/subprocess.h",
 
     f"https://raw.githubusercontent.com/Cyan4973/xxHash/{XXHASH_COMMIT}/xxhash.c":      "vendor/hash/xxhash/xxhash.c",
     f"https://raw.githubusercontent.com/Cyan4973/xxHash/{XXHASH_COMMIT}/xxhash.h":      "vendor/hash/xxhash/xxhash.h",

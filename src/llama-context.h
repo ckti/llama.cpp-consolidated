@@ -92,6 +92,12 @@ struct llama_context {
     float * get_embeddings_nextn_ith(int32_t i);
 
     float * get_embeddings_layer_inp(uint32_t lid);
+    float * get_embeddings_capture();
+    float * get_embeddings_capture_ith(int32_t i);
+    uint32_t get_n_capture() const;
+    void set_capture_layers(const std::vector<int32_t> & layer_ids, bool masked = true);
+    void set_dspark_ctx(const float * feat, int64_t n_ctx_rows, int64_t n_embd_cap);
+    bool dspark_markov_resample(uint32_t n_rows, llama_token prev_token, llama_token * result);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -290,6 +296,8 @@ private:
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
+    llama_dspark_ctx dspark_ctx;
+
     llama_memory_ptr memory;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
@@ -307,6 +315,7 @@ private:
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
+    buffer_view<float> embd_capture = {nullptr, 0};
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active
@@ -369,6 +378,7 @@ private:
     std::vector<size_t>                     backend_buf_exp_size; // expected buffer sizes
 
     llm_graph_result_ptr gf_res_prev;
+    ggml_backend_sched_ptr dspark_markov_sched;
     llm_graph_result_ptr gf_res_reserve;
 
     // host buffer for the model output (logits and embeddings)

@@ -446,7 +446,7 @@ int main(int argc, char ** argv) {
             common_speculative_draft_params & dp = common_speculative_get_draft_params(spec, seq_id);
             dp.drafting = true;
             dp.n_max    = n_draft;
-            dp.n_past   = n_past;
+            dp.pos0   = n_past;
             dp.id_last  = id_last;
             dp.prompt   = nullptr; // unused by dspark
             dp.result   = &draft;
@@ -512,7 +512,7 @@ int main(int argc, char ** argv) {
             // rollback of the recurrent state, and a silently ignored no-op
             // would leave every round's rejected draft tail permanently
             // baked into the recurrent state instead of failing loudly.
-            common_context_seq_rm(ctx_tgt, seq_id, n_past, -1);
+            common_memory{ctx_tgt}.seq_rm(seq_id, n_past, -1);
         }
 
         const double sp_seconds     = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_sp0).count();
