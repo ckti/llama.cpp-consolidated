@@ -15,13 +15,11 @@
 
 namespace syclex = sycl::ext::oneapi::experimental;
 
-static int ggml_sycl_fattn_vec_get_nthreads_host(const int cc) {
-    return 128;
-    GGML_UNUSED(cc);
-}
-
-static constexpr int ggml_sycl_fattn_vec_get_nthreads_device() {
-    return 128;
+static int ggml_sycl_fattn_vec_get_nthreads_device(gpu_arch arch) {
+    // Xe2 (Battlemage, Lunar Lake) runs the flash-attention vec kernel best with a 256-thread work group.
+    return (arch == gpu_arch::intel_gpu_bmg_g21 ||
+            arch == gpu_arch::intel_gpu_bmg_g31 ||
+            arch == gpu_arch::intel_gpu_lnl_m) ? 256 : 128;
 }
 
 // Currenlty llvm with the amdgcn target dose not support unrolling loops
@@ -36,7 +34,8 @@ template <int D,
           int type_K,
           int type_V,
           bool use_logit_softcap,
-          int warp_size>  // D == head size
+          int warp_size,
+          int nthreads>  // D == head size
 static void flash_attn_ext_vec(const char* __restrict__ Q,
                         const char* __restrict__ K,
                         const char* __restrict__ V,
@@ -193,11 +192,13 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
         KQ_sum[j] = 0.0f;
     }
 
+    // With the turbo LUT active the KQ loop reads turbo_lut_ptr from SLM, never Q_reg.
+    constexpr int Q_reg_size = n_centroids_lut > 0 ? 1 : (D/2)/nthreads_KQ;
     // Convert Q to float2 (f16 K) or q8_1 (quantized K) and store in registers:
 #ifdef GGML_SYCL_F16
-    sycl::half2 Q_reg[ncols][(D / 2) / nthreads_KQ] = {{{0.0f, 0.0f}}};  // Will be initialized completely.
+    sycl::half2 Q_reg[ncols][Q_reg_size] = {{{0.0f, 0.0f}}};  // Will be initialized completely.
 #else
-    sycl::float2 Q_reg[ncols][(D/2)/nthreads_KQ] = {{{0.0f, 0.0f}}}; // May be only partially initialized.
+    sycl::float2 Q_reg[ncols][Q_reg_size] = {{{0.0f, 0.0f}}}; // May be only partially initialized.
 #endif // GGML_SYCL_F16
     int    Q_i32[ncols][1 > D/(sizeof(int)*nthreads_KQ) ? 1 : D/(sizeof(int)*nthreads_KQ)];
     sycl::float2 Q_ds[ncols][1 > D / (sizeof(int) * nthreads_KQ) ? 1 : D / (sizeof(int) * nthreads_KQ)];
@@ -258,7 +259,7 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
 
         item_ct1.barrier(sycl::access::fence_space::local_space);
 
-    } else {
+    } else if constexpr (n_centroids_lut == 0) {
 #ifdef GGML_SYCL_F16
         const sycl::half2 scale_h2 = sycl::half2(scale, scale);
 #pragma unroll
@@ -658,19 +659,34 @@ void ggml_sycl_flash_attn_ext_vec_case_impl(ggml_backend_sycl_context & ctx, ggm
 
     const int warp_size = WARP_16_SIZE; //better performance than WARP_32_SIZE
 
-    const int cc = ggml_sycl_info().devices[ggml_sycl_get_device()].cc;
-
-    const int nthreads = ggml_sycl_fattn_vec_get_nthreads_host(cc);
-    const int nwarps   = nthreads / warp_size;
-
     const bool need_f16_K = type_K == GGML_TYPE_F16;
     const bool need_f16_V = type_V == GGML_TYPE_F16;
     constexpr size_t nbytes_shared = 0;
 
-    launch_fattn<D, cols_per_block, 1,
-                 flash_attn_ext_vec<D, cols_per_block, type_K, type_V,
-                                    use_logit_softcap, warp_size>, warp_size>(
-        ctx, dst, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+    const auto arch = ggml_sycl_info().devices[ctx.device].hw_info.arch;
+    const int nthreads = ggml_sycl_fattn_vec_get_nthreads_device(arch);
+    // 256 threads would overflow the 64 KB work-group local memory at D == 512, so keep 128 there.
+    // if constexpr, not a runtime if: a runtime guard still instantiates the D == 512
+    // 256-thread kernel, and its local memory request fails the whole module build.
+    if constexpr (D <= 256) {
+        if (nthreads == 256) {
+            constexpr int nthreads_hw = 256;
+            constexpr int nwarps = nthreads_hw / warp_size;
+            launch_fattn<D, cols_per_block, 1,
+                         flash_attn_ext_vec<D, cols_per_block, type_K, type_V,
+                                            use_logit_softcap, warp_size, nthreads_hw>, warp_size>(
+                ctx, dst, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+            return;
+        }
+    }
+    {
+        constexpr int nthreads_hw = 128;
+        constexpr int nwarps = nthreads_hw / warp_size;
+        launch_fattn<D, cols_per_block, 1,
+                     flash_attn_ext_vec<D, cols_per_block, type_K, type_V,
+                                        use_logit_softcap, warp_size, nthreads_hw>, warp_size>(
+            ctx, dst, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+    }
 }
 
 template <int D, int type_K, int type_V>

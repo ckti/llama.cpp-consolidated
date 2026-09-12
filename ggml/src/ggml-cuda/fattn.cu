@@ -180,7 +180,10 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
 
     // Edge cases like no mask, ALiBi, unpadded K/V, or misaligned addresses for large data transfers
-    //     are put into the template specialization without GQA optimizations.
+    //     are put into the template specialization without GQA optimizations. Quantized tensors
+    //     (incl. turbo2/3/4) are skipped here: their loaders dequantize into SMEM via the
+    //     swizzled/padded tile helpers rather than reading nb[] directly, so the 16-byte-stride
+    //     alignment this loop checks for doesn't apply to them.
     bool use_gqa_opt = mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
     for (const ggml_tensor * t : {Q, K, V, mask}) {
         if (t == nullptr || ggml_is_quantized(t->type)) {
@@ -328,7 +331,7 @@ static void ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2(ggml_backend_cuda_c
     ggml_cuda_flash_attn_ext_mma_turbo_case<DKQ, DV, 8, 1, type_K, type_V>(ctx, dst); // ncols2 = 1 -> (8,1)
 }
 
-// Env latch for the fused turbo4 MMA decode path. DEFAULT OFF.
+// Env latch for the fused turbo MMA decode path. DEFAULT ON.
 //
 // The MMA path is correctness-validated (coherent output, KLD == VEC baseline 0.008396)
 // and faster than VEC at every depth (beats rival "buun"), BUT it is NOT bit/token-identical
@@ -336,8 +339,8 @@ static void ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2(ggml_backend_cuda_c
 // reduction trees (tensor-core fragment order vs per-thread VEC order), so a near-tie greedy
 // token can flip (~1 in ~25 tokens on a hard tie). This is the same irreducible f16-order
 // difference that exists between the base f16-MMA and f16-VEC kernels — not a regression — but
-// it fails strict token-identity. We therefore keep VEC the default and expose the faster MMA
-// path as opt-in via GGML_TURBO_MMA_FUSED=1.
+// it fails strict token-identity. GGML_TURBO_MMA_FUSED=0 is the VEC kill-switch for anyone who
+// needs that identity guarantee back.
 static bool ggml_cuda_turbo_mma_fused() {
     static const bool v = []{
         const char * s = getenv("GGML_TURBO_MMA_FUSED");
@@ -905,12 +908,12 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
 
-    // Fused turbo MMA decode gate (DEFAULT ON — see ggml_cuda_turbo_mma_fused; GGML_TURBO_MMA_FUSED=0 disables).
-    // Routes turbo4-K==turbo4-V, D in {128,256}, decode (Q->ne[1] <= 4) onto the GQA-packed
+    // Fused turbo MMA decode gate (DEFAULT ON, see ggml_cuda_turbo_mma_fused; GGML_TURBO_MMA_FUSED=0 disables).
+    // Routes turbo2/3/4 K==V, D in {128,256}, decode (Q->ne[1] <= 4) onto the GQA-packed
     // MMA path (KV read once per head-group instead of per query head). Q is ALREADY
-    // graph-rotated (src/llama-graph.cpp) and the FA output is inverse-rotated there — this
-    // path does NO inline FWHT and NO src swap. Default OFF (env unset / !=1) falls straight
-    // GGML_TURBO_MMA_FUSED=0 falls straight through to the original VEC dispatch (kill-switch).
+    // graph-rotated (src/llama-graph.cpp) and the FA output is inverse-rotated there, so this
+    // path does NO inline FWHT and NO src swap. GGML_TURBO_MMA_FUSED=0 falls straight through
+    // to the original VEC dispatch (kill-switch).
     {
         const ggml_tensor * Q = dst->src[0];
         const ggml_tensor * K = dst->src[1];

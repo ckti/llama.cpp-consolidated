@@ -1141,13 +1141,21 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             return true;
         }
 
-        // Target prefill may contain token IDs or multimodal embeddings. Both
-        // produce the target-layer features used to seed the draft KV cache, so
-        // embeddings are injected too, except the pinned ones skipped below.
+        // Target prefill may contain token IDs or multimodal embeddings (image chunks).
+        // Image chunks are not mirrored into the draft: their target-layer features are
+        // vision states the draft was never trained on, and their M-RoPE positions collapse
+        // onto one temporal position, so injecting them poisons every draft after the
+        // image (acceptance fell from ~0.5 to ~0.03 for the rest of the conversation).
+        // Skipping them leaves a gap in the draft's cache between the text before and after
+        // the image; the draft keeps the target's positions, and the text tokens after the
+        // image carry the image's influence in their injected features. The gap is fine for
+        // the default sliding-window draft cache: every batch it does see has consecutive
+        // positions, which is all find_slot requires (the crash was the image batch itself,
+        // whose tokens all carry one temporal position). No server-side change is involved.
         // TODO: revisit after https://github.com/ggml-org/llama.cpp/pull/24669 is merged
         const bool has_tokens     = batch_in.token != nullptr;
         const bool has_embeddings = batch_in.embd  != nullptr;
-        if (has_tokens == has_embeddings) {
+        if (!has_tokens || has_embeddings) {
             return true;
         }
 
@@ -1423,6 +1431,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     //   neither (qwen35 / qwen35moe): a single trained MTP head.
     int32_t n_mtp_layers  = 1;
     bool    is_mem_shared = false;   // gemma4
+    bool    same_position_draft = false; // gemma4-assistant only: every draft row in a round shares n_past
     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared
 
     // Per-sequence cross-batch carryover: pair (h_p, x_{p+1}) at MTP pos p+1.
@@ -1516,6 +1525,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
 
         is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
+        same_position_draft = is_mem_shared && llama_model_uses_shared_position_draft(llama_get_model(ctx_dft));
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
         chain_graph   = !is_mem_shared && !chain_heads && chain_enabled && llama_model_supports_mtp_chain(llama_get_model(ctx_dft));
 
@@ -2206,7 +2216,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                         std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd,
                                     chain_h[seq_id].data() + (size_t) t * n_embd, row_bytes);
                     }
-                } else if (is_mem_shared) {
+                } else if (same_position_draft) {
                     // note: with shared memory (e.g. Gemma4 assistants) we use the same position for all draft tokens
                     // ref: https://github.com/huggingface/transformers/blob/effde20942e3f82a1b97449f60b3a48c5ff96145/docs/source/en/model_doc/gemma4_assistant.md?plain=1#L36-L37
                     common_batch_add(batch, id, dp.pos0, { seq_id }, true);

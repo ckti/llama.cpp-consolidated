@@ -116,6 +116,7 @@ llama_context::llama_context(
                         __func__, cparams.n_rs_seq);
         cparams.n_rs_seq = 0;
     }
+    cparams.gdn_replay = params.gdn_replay;
 
     cparams.n_threads               = params.n_threads;
     cparams.n_threads_batch         = params.n_threads_batch;
@@ -405,6 +406,16 @@ llama_context::llama_context(
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
+
+        if (params.path_kv_mean_center != nullptr) {
+            auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+            if (!kv) {
+                throw std::runtime_error("path_kv_mean_center is only supported for the standard KV cache (not recurrent, hybrid or MLA/DSA memory types)");
+            }
+            if (!kv->load_kv_mean_center(params.path_kv_mean_center)) {
+                throw std::runtime_error("failed to load K-cache mean-centering bias file");
+            }
+        }
     }
 
     // init backends
@@ -3783,6 +3794,7 @@ llama_context_params llama_context_default_params() {
         /*.n_ubatch                    =*/ 512,
         /*.n_seq_max                   =*/ 1,
         /*.n_rs_seq                    =*/ 0,
+        /*.gdn_replay                  =*/ false,
         /*.n_outputs_max               =*/ 0,
         /*.n_outputs_max_per_seq       =*/ 1,
         /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default
@@ -3896,6 +3908,12 @@ llama_context * llama_init_from_model(
                 return nullptr;
             }
         }
+    }
+
+    if (params.path_kv_mean_center != nullptr && params.type_k != GGML_TYPE_Q4_0) {
+        LLAMA_LOG_ERROR("%s: path_kv_mean_center requires the K cache type to be Q4_0 (got %s)\n",
+                __func__, ggml_type_name(params.type_k));
+        return nullptr;
     }
 
     if (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED &&
@@ -4068,6 +4086,10 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
 
 bool llama_model_supports_mtp_chain(const llama_model * model) {
     return model != nullptr && model->arch == LLM_ARCH_QWEN35;
+}
+
+bool llama_model_uses_shared_position_draft(const llama_model * model) {
+    return model != nullptr && model->arch == LLM_ARCH_GEMMA4_ASSISTANT;
 }
 
 void llama_set_mtp_chain(llama_context * ctx, bool value) {

@@ -244,6 +244,10 @@ static void test_q4_0_gate() {
     llama_context_ptr ctx_bad = build_context(model.get(), GGML_TYPE_F16, tmp_path_unrot.c_str());
     TEST_ASSERT(ctx_bad == nullptr);
 
+    // The runtime keeps optional attention rotation off by default. Enable it here so the
+    // following basis-mismatch and matching-basis checks exercise the rotated Q4_0 path.
+    setenv("LLAMA_ATTN_ROT_K_OVERRIDE", "1", 1);
+
     // a bias measured in the unrotated basis must be rejected by a rotated (Q4_0) K cache:
     // a basis mismatch degrades quantization quality instead of improving it
     llama_context_ptr ctx_mismatch = build_context(model.get(), GGML_TYPE_Q4_0, tmp_path_unrot.c_str());
@@ -262,6 +266,7 @@ static void test_q4_0_gate() {
     }
 
     remove(tmp_path.c_str());
+    unsetenv("LLAMA_ATTN_ROT_K_OVERRIDE");
 
     LOG_INF("%s: OK\n", __func__);
 }

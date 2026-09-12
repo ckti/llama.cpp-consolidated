@@ -1039,6 +1039,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ4_1S> {
+    static constexpr int qk = QK_TQ4_1S;
+    static constexpr int qr = 1;              // QR_TQ4_1S
+    static constexpr int qi = QK_TQ4_1S / 4;  // = QK/(4*QR): 8 int8-quads per block
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_MXFP4> {
     static constexpr int qk = QK_MXFP4;
     static constexpr int qr = QR_MXFP4;
@@ -1202,6 +1209,9 @@ const ggml_cuda_device_info & ggml_cuda_info();
 
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
+
+// raw device allocation, honors GGML_CUDA_ENABLE_UNIFIED_MEMORY. free with cudaFree
+cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device);
 
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
@@ -1463,14 +1473,73 @@ struct ggml_backend_cuda_context {
 
     int curr_stream_no = 0;
 
+    // [TAG_FA_F16_CUDA_GRAPHS] Set once per compute call in ggml_backend_cuda_graph_compute: true
+    // when the current cgraph is graph-enabled AND graph-compatible (i.e. it will be captured).
+    // On HIP the flash-attention launcher reads this to place its f16 KV-dequant temp buffers in the
+    // capture-safe memory pool instead of raw cudaMalloc/cudaFree, which are illegal while a CUDA
+    // graph is being captured. Left false for graph-incompatible graphs so those keep the raw
+    // release-after-use path (avoids the legacy pool retaining the temp; ref llama.cpp #22107).
+    bool fa_f16_use_pool = false;
+
+    // Per-graph-eval shared-quantize cache for the mmvq path. Several matvecs in one decode
+    // layer consume the same normed activation (Q/V/K read attn_norm; the router, fused
+    // gate/up and shared-expert gate read attn_post_norm), and each used to re-quantize it to
+    // q8_1 — ~60% of all quantize launches were duplicates. The most recent quantization is
+    // kept in a persistent device buffer and reused when the same src1 tensor is seen again in
+    // the same graph eval with identical layout. Stream ordering makes overwrite safe (all
+    // consumers of the previous entry are already enqueued before the next quantize runs),
+    // and the buffer only grows on shape changes, which force a CUDA-graph re-capture anyway.
+    // Retired (outgrown) device buffers, freed at teardown. Named at class scope: MSVC mangles
+    // a type nested in an unnamed struct as <unnamed-tag>, so two identical nested copies
+    // collide into one decorated name and the linker rejects the object (LNK1179).
+    struct retired_buf { char * ptr; size_t cap; int dev; };
+
+    struct {
+        char *              ptr  = nullptr;      // raw device memory (not pool), grow-only
+        size_t              cap  = 0;            // usable bytes
+        int                 dev  = -1;           // device the buffer was allocated on
+        const ggml_tensor * src1 = nullptr;      // key: tensor identity ...
+        const void *        data = nullptr;      // ... and its data pointer
+        uint64_t            epoch = 0;           // valid only within this graph eval
+        size_t              size = 0;            // quantized bytes
+        int64_t             ne10_padded = 0;     // layout keys
+        ggml_type           type = GGML_TYPE_COUNT;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } q8_cache;
+
+    // Same idea for the TQ activation pre-rotation (forward block WHT + q8_1 quantize): the MoE
+    // gate and up projections consume the same normed activation, so the rotation ran twice per
+    // layer. Keyed by tensor identity, data pointer, size and graph-eval epoch; main-stream only.
+    struct {
+        char *              ptr  = nullptr;
+        size_t              cap  = 0;
+        int                 dev  = -1;
+        const ggml_tensor * src1 = nullptr;
+        const void *        data = nullptr;
+        uint64_t            epoch = 0;
+        size_t              size = 0;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } tq_rot_cache;
+
+    uint64_t graph_epoch = 1;
+
+    // Fusion hit counters. Read through ggml_backend_cuda_fusion_count(); test-backend-ops uses
+    // them to check that a fusion actually fired, not only that the fused result is right.
+    struct {
+        int64_t elem_chain    = 0;   // elementwise chains launched (ggml_cuda_fuse_elem_chain)
+        int64_t q8_cache_hits = 0;   // mmvq shared-quantize cache hits
+        int64_t fused_add     = 0;   // tuned multi-ADD runs (ggml_cuda_op_fused_add)
+        int64_t fused_mul     = 0;   // tuned multi-MUL runs (ggml_cuda_op_fused_mul)
+    } fusion_stats;
+
 #ifdef USE_CUDA_GRAPH
-    // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
-    // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
-    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+
+    static const size_t max_cuda_graphs = 64;
 
     int64_t last_graph_eviction_sweep = 0;
 
-    ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
+    ggml_cuda_graph * cuda_graph(uint64_t graph_key) {
         const int64_t time_now = ggml_time_us();
 
         // sweep every 5s, evicting cuda graphs unused for >=10s
@@ -1485,9 +1554,18 @@ struct ggml_backend_cuda_context {
             }
         }
 
-        auto it = cuda_graphs.find(first_node_ptr);
+        auto it = cuda_graphs.find(graph_key);
         if (it == cuda_graphs.end()) {
-            it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto lru = cuda_graphs.begin();
+                for (auto c = cuda_graphs.begin(); c != cuda_graphs.end(); ++c) {
+                    if (c->second->last_used_time < lru->second->last_used_time) {
+                        lru = c;
+                    }
+                }
+                cuda_graphs.erase(lru);
+            }
+            it = cuda_graphs.emplace(graph_key, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
         return it->second.get();

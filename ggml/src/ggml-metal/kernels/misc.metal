@@ -1507,3 +1507,48 @@ kernel void kernel_turbo_wht(
         out[i*4+3] = f.w;
     }
 }
+
+constant float convrot_h4[4][4] = {
+    { 1.0f,  1.0f,  1.0f, -1.0f},
+    { 1.0f,  1.0f, -1.0f,  1.0f},
+    { 1.0f, -1.0f,  1.0f,  1.0f},
+    {-1.0f,  1.0f,  1.0f,  1.0f},
+};
+
+kernel void kernel_convrot(
+        device const float * src [[buffer(0)]],
+        device       float * dst [[buffer(1)]],
+        uint group [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]]) {
+    threadgroup float buf[2][QK8_CR];
+
+    for (ushort i = tid; i < QK8_CR; i += 64) {
+        buf[0][i] = src[group * QK8_CR + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    ushort rd = 0;
+    ushort wr = 1;
+    for (ushort len = 4, shift = 0; len <= QK8_CR; len *= 4, shift += 2) {
+        const ushort quarter = len / 4;
+        for (ushort i = tid; i < QK8_CR; i += 64) {
+            const ushort base = i & ~(len - 1);
+            const ushort row = (i >> shift) & 3;
+            const ushort col = i & (quarter - 1);
+
+            float sum = 0.0f;
+            for (ushort j = 0; j < 4; ++j) {
+                sum += convrot_h4[row][j] * buf[rd][base + j * quarter + col];
+            }
+            buf[wr][i] = sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const ushort tmp = rd;
+        rd = wr;
+        wr = tmp;
+    }
+
+    for (ushort i = tid; i < QK8_CR; i += 64) {
+        dst[group * QK8_CR + i] = buf[rd][i] * (1.0f / 16.0f);
+    }
+}
