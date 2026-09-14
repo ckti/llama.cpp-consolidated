@@ -113,11 +113,12 @@ int main(int argc, char ** argv) {
 
     const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
 
-    // load the draft model (if any) - this also creates the MTP draft context when MTP speculation is enabled
-    common_speculative_init_result_ptr spec_init;
+    // load the draft model
+    llama_model_ptr model_dft;
+    llama_context_ptr ctx_dft;
 
     {
-        common_params params_dft = common_base_params_to_speculative(params);
+        const auto & params_spec = params.speculative.draft;
 
         auto params_dft = params;
 
@@ -158,14 +159,12 @@ int main(int argc, char ** argv) {
         ctx_dft.reset(llama_init_from_model(model_dft.get(), cparams));
 
         params.speculative.draft.ctx_tgt = ctx_tgt;
-        params.speculative.draft.ctx_dft = spec_init->context();
+        params.speculative.draft.ctx_dft = ctx_dft.get();
     }
-
-    llama_context * ctx_dft = params.speculative.draft.ctx_dft;
 
     // check if the context supports partial sequence removal
     const bool use_ckpt_tgt = common_context_can_seq_rm(ctx_tgt) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
-    const bool use_ckpt_dft = common_context_can_seq_rm(ctx_dft) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+    const bool use_ckpt_dft = common_context_can_seq_rm(ctx_dft.get()) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
     if (use_ckpt_tgt) {
         LOG_INF("speculative decoding will use checkpoints (context does not support partial sequence removal)\n");
@@ -267,8 +266,6 @@ int main(int argc, char ** argv) {
         common_speculative_begin(spec, seq_id, prompt_tgt);
     }
 
-    size_t n_draft = 0;
-
     llama_tokens draft;
 
     common_prompt_checkpoint ckpt;
@@ -327,7 +324,7 @@ int main(int argc, char ** argv) {
             if (!spec_capture) {
                 ckpt.load_dft(ctx_dft.get(), seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
-                llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, ckpt.pos_max + 1, -1);
+                llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), seq_id, ckpt.pos_max + 1, -1);
             }
         } else {
             // we have a previous (partial) draft to reuse from checkpoint restoration
@@ -404,9 +401,9 @@ int main(int argc, char ** argv) {
             }
 
             if (ctx_dft) {
-                ckpt.load_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                ckpt.load_dft(ctx_dft.get(), seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
-                llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, ckpt.pos_max + 1, -1);
+                llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), seq_id, ckpt.pos_max + 1, -1);
             }
 
             prompt_tgt.resize(ckpt.n_tokens);
@@ -426,7 +423,10 @@ int main(int argc, char ** argv) {
             // drop the rejected tail of this round's verify batch from the target
             // cache (bounded partial rollback, also valid for hybrid GDN state);
             // dspark's own drafter cache was already cropped inside draft().
-            common_context_seq_rm(ctx_tgt, seq_id, n_past, -1);
+            if (!llama_memory_seq_rm(llama_get_memory(ctx_tgt), seq_id, n_past, -1)) {
+                LOG_ERR("failed to remove rejected target sequence tail\n");
+                return 1;
+            }
         }
         n_drafted += n_draft; // note: we ignore the discarded small drafts
         n_accept  += ids.size() - 1;
@@ -470,8 +470,14 @@ int main(int argc, char ** argv) {
             // ignored no-op would leave every round's rejected draft tail
             // permanently baked into the recurrent state instead of failing
             // loudly.
-            common_context_seq_rm(ctx_tgt,       seq_id, n_past, -1);
-            common_context_seq_rm(ctx_dft.get(), seq_id, n_past, -1);
+            if (!llama_memory_seq_rm(llama_get_memory(ctx_tgt), seq_id, n_past, -1)) {
+                LOG_ERR("failed to remove target sequence tail\n");
+                return 1;
+            }
+            if (!llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), seq_id, n_past, -1)) {
+                LOG_ERR("failed to remove draft sequence tail\n");
+                return 1;
+            }
         }
 
         if ((params.n_predict >= 0 && n_predict > params.n_predict) || has_eos) {

@@ -3180,6 +3180,8 @@ static struct llama_sampler_i llama_sampler_penalties_i = {
     /* .backend_accept    = */ nullptr,
     /* .backend_apply     = */ llama_sampler_penalties_backend_apply,
     /* .backend_set_input = */ llama_sampler_penalties_backend_set_input,
+    /* .backend_reset     = */ nullptr,
+    /* .copy_state        = */ nullptr,
 };
 
 struct llama_sampler * llama_sampler_init_penalties(

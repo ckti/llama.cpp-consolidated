@@ -1306,7 +1306,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
                     stream);
             };
 
-            if (should_use_small_k(c_ncols_dst)) {
+            if (allow_small_k && should_use_small_k(c_ncols_dst)) {
                 launch(std::true_type{},  std::false_type{});
             } else if (should_halve_iters()) {
                 launch(std::false_type{}, std::true_type{});
