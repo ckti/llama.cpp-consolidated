@@ -449,6 +449,14 @@ extern "C" {
         // a source/target/parent context
         // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
         struct llama_context * ctx_other;
+
+        // [EXPERIMENTAL] block-granular KV cache streaming: total shared CUDA
+        // arena (compute workspace + resident KV pages + transfer ring), in
+        // MiB. 0 disables streaming.
+        // Appended here (not with the other [EXPERIMENTAL] fields above) so
+        // a caller built against a pre-streaming header keeps the same
+        // offsets for every field before it.
+        uint32_t kv_stream_arena_mib;
     };
 
     struct llama_model_tensor_override {

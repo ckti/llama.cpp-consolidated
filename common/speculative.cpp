@@ -1070,6 +1070,13 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         // embd batches on an M-RoPE draft carry 4 position rows per token
         is_mrope = llama_model_rope_type(model_dft) == LLAMA_ROPE_TYPE_MROPE;
 
+        // embd batches on an M-RoPE draft need 4 position rows per token
+        is_mrope = llama_model_rope_type(model_dft) == LLAMA_ROPE_TYPE_MROPE;
+        if (is_mrope) {
+            free(batch_inject.pos);
+            batch_inject.pos = (llama_pos *) malloc(sizeof(llama_pos) * 4 * llama_n_batch(ctx_dft));
+        }
+
         smpls.resize(n_seq);
         for (auto & s : smpls) {
             common_params_sampling sparams;
@@ -1099,6 +1106,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         // equal to the target's layer count means the pre-final-norm hidden state,
         // which is captured through the unmasked nextn path instead
         n_layer_tgt = llama_model_n_layer(model_tgt);
+
+        // turn on extraction of the target layers' input embeddings
         for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
             if (target_layer_ids[k] == n_layer_tgt) {
                 llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
@@ -3674,6 +3683,9 @@ common_params common_base_params_to_speculative(const common_params & params) {
 
     result.cache_type_k  = params_spec.cache_type_k;
     result.cache_type_v  = params_spec.cache_type_v;
+    // The first block-streaming implementation owns only the target cache.
+    // MTP keeps its ordinary cache until both contexts can share one pool.
+    result.kv_stream_arena_mib = 0;
     result.n_outputs_max = params.n_parallel;
     result.n_outputs_max_per_seq = 1;
 
