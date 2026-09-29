@@ -926,6 +926,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
     const ggml_type tsrc1 = op->src[1]->type;
 
     const char * suffix = "";
+    char ptq1_suffix[16];
 
     bool split = false;
 

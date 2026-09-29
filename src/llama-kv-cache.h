@@ -141,7 +141,10 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         // a model can hold more than one cache, so the tensor names have to stay unique
-                 const char *   name_tag = "");
+                 const char *   name_tag = "",
+                         size_t kv_stream_stage_bytes = 0,
+                         void * kv_stream_phase_arena = nullptr,
+                         size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_kv_cache() = default;
 
@@ -191,6 +194,9 @@ public:
     ggml_tensor * get_k_storage(int32_t il) const;
     ggml_tensor * get_v_storage(int32_t il) const;
     bool get_v_transposed() const;
+
+    bool kv_stream_resize_pool(size_t pool_bytes, uint32_t active_tokens, uint32_t ring_slots);
+    bool kv_stream_adapt(uint32_t active_tokens, uint32_t query_tokens);
 
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 

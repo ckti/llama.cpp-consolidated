@@ -703,6 +703,7 @@ struct vk_op_gated_delta_net_push_constants {
     uint32_t neq1, rq3;
     float scale;
     uint32_t K;
+    uint32_t emit_mode;
 };
 
 struct vk_op_ssm_scan_push_constants {
@@ -1137,4 +1138,3 @@ static vk_op_binary_push_constants ggml_vk_rms_norm_push_constants(
         eps, 0.0f, (int32_t)num_partials,
     };
 }
-

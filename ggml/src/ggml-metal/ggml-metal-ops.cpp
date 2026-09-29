@@ -943,7 +943,14 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+static bool ggml_metal_op_can_fuse_fwht_swiglu(ggml_metal_op_t ctx, int idx);
+static int  ggml_metal_op_fwht_swiglu(ggml_metal_op_t ctx, int idx);
+
 int ggml_metal_op_glu(ggml_metal_op_t ctx, int idx) {
+    if (ctx->use_fusion && ggml_metal_op_can_fuse_fwht_swiglu(ctx, idx)) {
+        return ggml_metal_op_fwht_swiglu(ctx, idx);
+    }
+
     ggml_tensor * op = ctx->node(idx);
 
     ggml_metal_library_t lib = ctx->lib;

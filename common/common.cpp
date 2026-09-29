@@ -1242,8 +1242,6 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         }
-        cparams_dft.n_rs_seq = 0;
-
         const common_fit_extra_model extra = {
             /*.path_model   =*/ params_dft.model.path.c_str(),
             /*.mparams      =*/ &mparams_dft,
@@ -1755,6 +1753,10 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.path_kv_mean_center = params.kv_mean_center_path.empty() ? nullptr : params.kv_mean_center_path.c_str();
 
     return cparams;
+}
+
+bool common_params_should_fit_device_memory(const common_params & params) {
+    return params.fit_params && params.kv_stream_arena_mib == 0;
 }
 
 //

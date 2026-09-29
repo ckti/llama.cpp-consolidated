@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llama-hparams.h"  // LLAMA_MAX_LAYERS
 #include "llama.h"
 #include "llama-hparams.h" // LLAMA_MAX_LAYERS
 

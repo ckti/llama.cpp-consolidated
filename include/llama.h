@@ -332,6 +332,10 @@ extern "C" {
     };
 
     struct llama_model_params {
+        // Opt-in DSpark head borrowing. Caller guarantees the bound target and keeps it alive
+        // until the drafter and all drafter contexts are destroyed. No head weights are copied.
+        const struct llama_model * dspark_head_source;
+
         // NULL-terminated list of devices to use for offloading (if NULL, all available devices are used)
         ggml_backend_dev_t * devices;
 
@@ -1051,6 +1055,17 @@ extern "C" {
     LLAMA_API int32_t llama_decode(
             struct llama_context * ctx,
               struct llama_batch   batch);
+
+    // Describes the role of subsequent llama_decode() batches for phase-specialized memory allocators.
+    // It does not change model math.
+    enum llama_decode_phase {
+        LLAMA_DECODE_PHASE_AUTOMATIC  = 0,
+        LLAMA_DECODE_PHASE_PROMPT     = 1,
+        LLAMA_DECODE_PHASE_GENERATION = 2,
+    };
+
+    LLAMA_API void llama_set_decode_phase(
+            struct llama_context * ctx, enum llama_decode_phase phase);
 
     //
     // Extended batch API

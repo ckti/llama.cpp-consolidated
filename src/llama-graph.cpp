@@ -1207,11 +1207,13 @@ void llm_graph_result::reset() {
     t_embd        = nullptr;
     t_embd_pooled = nullptr;
     t_h_nextn     = nullptr;
+    t_h_capture   = nullptr;
 
     t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
     t_h_capture   = nullptr;
     t_sampled.clear();
+    t_dspark_greedy.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();
     t_candidates.clear();
@@ -1249,6 +1251,9 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
     }
     if (t_embd_pooled != nullptr) {
         ggml_set_output(t_embd_pooled);
+    }
+    if (t_h_capture != nullptr) {
+        ggml_set_output(t_h_capture);
     }
     if (t_h_nextn != nullptr) {
         ggml_set_output(t_h_nextn);
@@ -1357,6 +1362,12 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     mctx             (params.mctx),
     cross            (params.cross),
     dspark_ctx       (params.dspark_ctx),
+    dspark_has_context(params.dspark_has_context),
+    dspark_ctx_rows  (params.dspark_ctx_rows),
+    dspark_ctx_width (params.dspark_ctx_width),
+    hadamard_rotations(params.hadamard_rotations),
+    hadamard_inverses (params.hadamard_inverses),
+    prec_policy      (params.prec_policy),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -2258,6 +2269,24 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     cb(moe_out, "ffn_moe_out", il);
 
     return moe_out;
+}
+
+ggml_tensor * llm_graph_context::build_embd_rows(ggml_tensor * tok_embd, ggml_tensor * ids) const {
+    ggml_tensor * cur = ggml_get_rows(ctx0, tok_embd, ids);
+
+    // a Hadamard-latent embedding table stores rotated rows; restore the
+    // primal basis right after the lookup: h = s * (H z)
+    if (hadamard_inverses) {
+        const auto it = hadamard_inverses->find(tok_embd);
+        if (it != hadamard_inverses->end()) {
+            cur = llama_mul_mat_hadamard(ctx0, cur, it->second.rot);
+            if (it->second.signs) {
+                cur = ggml_mul(ctx0, cur, it->second.signs);
+            }
+        }
+    }
+
+    return cur;
 }
 
 // input embeddings with optional lora
@@ -3905,7 +3934,10 @@ void llm_graph_context::build_sampling() const {
 
     // add a dummy row to keep the single-output graph static regardless of active samplers
     // multi-output graphs can still vary with the number of output rows
-    ggml_tensor * logits_t = ggml_pad(ctx0, res->t_logits, 0, 1, 0, 0);
+    // DSpark reserve graphs can expose fewer draft rows than the output budget.
+    const int64_t pad_rows =
+        res->t_dspark_greedy.empty() ? 1 : std::max<int64_t>(1, int64_t(n_rows) - res->t_logits->ne[1]);
+    ggml_tensor * logits_t = ggml_pad(ctx0, res->t_logits, 0, pad_rows, 0, 0);
 
     for (const auto & entry : samplers) {
         if (entry.second->iface->backend_reset) {
@@ -3922,6 +3954,15 @@ void llm_graph_context::build_sampling() const {
         const bool active = it != sampling_rows.end();
         const auto & rows = active ? it->second : dummy_row;
         const int i_out   = active ? 1          : 0;
+
+        if (active && res->t_dspark_greedy.size() == n_rows && llama_sampler_chain_n(sampler) == 1 &&
+            std::strcmp(llama_sampler_name(llama_sampler_chain_get(sampler, 0)), "greedy") == 0) {
+            for (uint32_t row : rows) {
+                res->t_sampled[row] = res->t_dspark_greedy[row];
+                ggml_build_forward_expand(gf, res->t_sampled[row]);
+            }
+            continue;
+        }
 
         for (uint32_t i = 0; i < rows.size(); ++i) {
             ggml_tensor * logits_seq = ggml_view_1d(ctx0, logits_t, logits_t->ne[0], rows[i] * logits_t->nb[1]);

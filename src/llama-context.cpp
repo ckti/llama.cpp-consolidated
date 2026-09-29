@@ -21,7 +21,6 @@
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
-#include "llama-ext.h"
 #include "llama-sampler.h"
 #include "llama.h"
 
@@ -29,6 +28,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -179,6 +179,15 @@ llama_context::llama_context(
             }
             cparams.ctx_other = params.ctx_other;
         }
+    }
+
+    hadamard_rotations = model.hadamard_rotations;
+    hadamard_inverses  = model.hadamard_inverses;
+    if (cparams.ctx_other) {
+        // Transform entries are keyed by tensor pointer, so borrowed target tensors remain distinct.
+        const auto & other = cparams.ctx_other->model;
+        hadamard_rotations.insert(other.hadamard_rotations.begin(), other.hadamard_rotations.end());
+        hadamard_inverses.insert(other.hadamard_inverses.begin(), other.hadamard_inverses.end());
     }
 
     if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED) {
@@ -969,7 +978,12 @@ bool llama_context::kv_stream_switch_phase(bool decode, uint32_t active_tokens) 
 
     // Releasing the scheduler returns the only borrowed compute lease.
     sched.reset();
-    gf_res_prev->reset();
+    for (auto & res : gf_res_prev) {
+        if (res) {
+            res->reset();
+        }
+    }
+    gf_res_prev_active = nullptr;
 
     const size_t   old_kv_bytes       = arena.current_kv_bytes;
     const size_t   old_compute_offset = arena.current_compute_offset;
@@ -2163,6 +2177,21 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
         }
     }
 
+    // extract multi-layer capture embeddings (concatenated per position).
+    // single bulk copy: t_h_capture is already [n_capture * n_embd, n_tokens].
+    if (embd_capture.data && cparams.n_capture_layers > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+        ggml_tensor * t_cap = res->get_h_capture();
+        if (!t_cap) {
+            LLAMA_LOG_ERROR("%s: target graph did not produce requested capture layers\n", __func__);
+            return -1;
+        }
+        ggml_backend_t backend_c = ggml_backend_sched_get_tensor_backend(sched.get(), t_cap);
+        GGML_ASSERT(backend_c != nullptr);
+        const uint32_t row = cparams.n_capture_layers * hparams.n_embd;
+        GGML_ASSERT(n_tokens * (int64_t) row <= (int64_t) embd_capture.size);
+        ggml_backend_tensor_get_async(backend_c, t_cap, embd_capture.data, 0, (size_t) n_tokens * row * sizeof(float));
+    }
+
     // TODO: hacky solution
     if (model.arch == LLM_ARCH_T5 && t_embd) {
         //cross.t_embd = t_embd;
@@ -2477,6 +2506,25 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
+        }
+
+        // extract multi-layer capture embeddings, concatenated per output position.
+        // capture always uses the masked (output-row) layout, so t_h_capture is
+        // [n_capture * n_embd, n_outputs]; copy in one shot per ubatch.
+        if (embd_capture.data && cparams.n_capture_layers > 0 && n_outputs > 0 &&
+            cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+            ggml_tensor * t_cap = res->get_h_capture();
+            if (!t_cap) {
+                LLAMA_LOG_ERROR("%s: target graph did not produce requested capture layers\n", __func__);
+                return -1;
+            }
+            ggml_backend_t backend_c = ggml_backend_sched_get_tensor_backend(sched.get(), t_cap);
+            GGML_ASSERT(backend_c != nullptr);
+            const uint32_t row              = cparams.n_capture_layers * hparams.n_embd;
+            float *        embd_capture_out = embd_capture.data + (size_t) n_outputs_prev * row;
+            GGML_ASSERT((n_outputs_prev + n_outputs) * (int64_t) row <= (int64_t) embd_capture.size);
+            ggml_backend_tensor_get_async(backend_c, t_cap, embd_capture_out, 0,
+                                          (size_t) n_outputs * row * sizeof(float));
         }
 
         // extract logits
@@ -2937,6 +2985,12 @@ void llama_context::output_reorder() {
             }
         }
 
+        if (embd_capture.size > 0) {
+            const uint64_t row = (uint64_t) cparams.n_capture_layers * n_embd;
+            for (uint64_t k = 0; k < row; k++) {
+                std::swap(embd_capture.data[i0 * row + k], embd_capture.data[i1 * row + k]);
+            }
+        }
         if (embd_nextn.size > 0) {
             for (uint64_t k = 0; k < n_embd_out; k++) {
                 std::swap(embd_nextn.data[i0 * n_embd_out + k], embd_nextn.data[i1 * n_embd_out + k]);
@@ -3193,6 +3247,12 @@ llm_graph_params llama_context::graph_params(llm_graph_result *             res,
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
         /*.dspark_ctx  =*/ &dspark_ctx,
+        /*.dspark_has_context =*/ !dspark_ctx.v_ctx_feat.empty(),
+        /*.dspark_ctx_rows =*/ dspark_ctx.n_ctx_rows,
+        /*.dspark_ctx_width =*/ dspark_ctx.n_embd_cap,
+        /*.hadamard_rotations =*/ &hadamard_rotations,
+        /*.hadamard_inverses  =*/ &hadamard_inverses,
+        /*.prec_policy =*/ nullptr,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),
@@ -5246,11 +5306,11 @@ bool llama_context::dspark_markov_resample(
 
     const ggml_tensor * head_a = model.dspark_markov_head_a;
     const ggml_tensor * head_b = model.dspark_markov_head_b;
-    if (head_a == nullptr || head_b == nullptr || gf_res_prev == nullptr) {
+    if (head_a == nullptr || head_b == nullptr || gf_res_prev_active == nullptr) {
         return false;
     }
 
-    const ggml_tensor * t_logits = gf_res_prev->get_logits();
+    const ggml_tensor * t_logits = gf_res_prev_active->get_logits();
     const int64_t n_vocab = model.vocab.n_tokens();
     if (t_logits == nullptr || t_logits->type != GGML_TYPE_F32 || t_logits->data == nullptr ||
             t_logits->ne[0] != n_vocab || t_logits->ne[1] < (int64_t) n_rows ||
@@ -5416,7 +5476,9 @@ void llama_set_dspark_ctx(
         llama_context * ctx,
         const float   * feat,
               int64_t   n_ctx_rows,
-              int64_t   n_embd_cap) {
+              int64_t   n_embd_cap,
+        const int32_t * pos) {
+    GGML_UNUSED(pos);
     ctx->set_dspark_ctx(feat, n_ctx_rows, n_embd_cap);
 }
 

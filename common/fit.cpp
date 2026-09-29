@@ -1,6 +1,7 @@
 #include "fit.h"
 
 #include "common.h"
+#include "json.h"
 #include "log.h"
 
 #include "../ggml/src/ggml-backend-moe-cache.h"

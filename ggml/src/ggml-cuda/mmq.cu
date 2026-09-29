@@ -24,7 +24,9 @@ bool ggml_cuda_mmq_has_config(
     return false;
 }
 
-static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
+static void ggml_cuda_mul_mat_q_switch_type(
+        ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream,
+        ggml_prec prec_src1) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
             mul_mat_q_case<GGML_TYPE_Q1_0>(ctx, args, stream);

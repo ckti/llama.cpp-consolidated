@@ -1107,6 +1107,8 @@ static int64_t get_row_rounding(ggml_type type, const std::array<float, GGML_SYC
 
     switch(type) {
         case GGML_TYPE_Q1_0:
+        case GGML_TYPE_PTQ1_0:
+        case GGML_TYPE_PQ2_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
             return max_compute_capability >= VER_GEN9 ? 128 : 64;
@@ -2777,7 +2779,8 @@ inline void ggml_sycl_op_mul_mat_sycl(
 #ifdef GGML_SYCL_F16
     bool use_fp16 = true;  // TODO(Yu) SYCL capability check
 #else
-    bool use_fp16 = false;
+    // ternary weights are exact in FP16 and the FP16 GEMM is much faster than FP32
+    bool use_fp16 = src0->type == GGML_TYPE_PQ2_0 || src0->type == GGML_TYPE_PTQ1_0;
 #endif
 
 #if GGML_SYCL_DNNL && defined(GGML_SYCL_HAS_BF16)
@@ -3645,6 +3648,7 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
                                                 " : converting src1 to fp16");
 
 #if GGML_SYCL_DNNL
+        if (g_ggml_sycl_enable_dnn) {
         // iterate tensor dims and find the slowest moving dim and stride
         int last_dim=0;
         int last_str=0;
@@ -3670,13 +3674,15 @@ static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, cons
         const to_fp16_sycl_t to_fp16_sycl = ggml_get_to_fp16_sycl(src1->type, dst);
         GGML_ASSERT(to_fp16_sycl != nullptr);
         to_fp16_sycl(src1_f16, src1_f16_alloc.get(), ne_src1, queue);
-# else
+        } else
+#endif
+        {
         const int64_t ne_src1 = ggml_nelements(src1);
         src1_f16_alloc.alloc(ne_src1);
         const to_fp16_nc_sycl_t to_fp16_nc_sycl = ggml_get_to_fp16_nc_sycl(src1->type);
         GGML_ASSERT(to_fp16_nc_sycl != nullptr);
         to_fp16_nc_sycl(src1_f16, src1_f16_alloc.get(), ne10, ne11, ne12, ne13, s11, s12, s13, queue);
-#endif
+        }
 
         src1_f16 = src1_f16_alloc.get();
         s11      = ne10;
@@ -3941,6 +3947,39 @@ static bool ggml_sycl_supports_dmmv(enum ggml_type type) {
         case GGML_TYPE_Q6_K:
         case GGML_TYPE_F16:
         case GGML_TYPE_BF16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool ggml_sycl_supports_mmvq(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q5_0:
+        case GGML_TYPE_Q5_1:
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_Q1_0:
+        case GGML_TYPE_PTQ1_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q2_K:
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q5_K:
+        case GGML_TYPE_Q6_K:
+        case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ1_M:
+        case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_XS:
+        case GGML_TYPE_MXFP4:
+        case GGML_TYPE_NVFP4:
             return true;
         default:
             return false;
@@ -4544,7 +4583,8 @@ static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_
 }
 
 static bool can_use_mul_mat_vec_q(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-    return ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
+    return ggml_sycl_supports_mmvq(src0->type) &&
+           src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
            src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
 }
 
@@ -6265,6 +6305,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
                     case GGML_TYPE_BF16:
                     case GGML_TYPE_F32:
                     case GGML_TYPE_Q1_0:
+                    case GGML_TYPE_PTQ1_0:
+                    case GGML_TYPE_PQ2_0:
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_NVFP4:
                     case GGML_TYPE_IQ2_XXS:

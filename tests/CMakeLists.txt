@@ -144,6 +144,29 @@ if (NOT WIN32)
     )
 endif()
 
+# dspark Phase 1 forward-graph gate (Tier 1: synthetic tap features / Tier 2:
+# diff vs the DeepSpec python reference). Not wired into `ctest` since both
+# tiers need a real dspark GGUF passed on the command line; run manually.
+# Uses internal functions not exported with LLAMA_API, so like the tests below it
+# is skipped on Windows when building with shared libraries.
+if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
+    llama_build(test-dspark-forward.cpp)
+endif()
+
+# dspark loader gate for the GIDD log-SNR metadata contract: conditioning=true
+# requires finite, ordered min/max_log_snr (src/models/dspark.cpp
+# load_arch_hparams). Wired into `ctest` but skips (exit 0) until the tiny
+# random-weight variant suite is generated into the build tree:
+#   python3 tests/gen-tiny-dspark.py --suite <build>/tests/dspark-logsnr-variants
+llama_build_and_test(test-dspark-logsnr-meta.cpp LABEL "model"
+    ARGS "${CMAKE_CURRENT_BINARY_DIR}/dspark-logsnr-variants")
+
+# Requires a fixture model and reference JSON; run manually.
+llama_build(test-dspark-loop.cpp)
+
+# Requires a target/drafter pair; run manually.
+llama_build(test-dspark-real-eval.cpp)
+
 if (LLAMA_LLGUIDANCE)
     llama_build_and_test(test-grammar-llguidance.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 endif ()
@@ -162,6 +185,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-grammar-integration.cpp)
     llama_build_and_test(test-llama-grammar.cpp)
     llama_build_and_test(test-batch-alloc.cpp)
+    llama_build_and_test(test-dfly-fusion.cpp)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)

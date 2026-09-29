@@ -1220,6 +1220,12 @@ class MODEL_TENSOR(IntEnum):
     FC                     = auto()  # feature fusion layer
     D2T                    = auto()  # draft to target vocabulary mapping
     # dspark
+    # dspark drafter
+    DSPARK_FC              = auto()
+    DSPARK_HIDDEN_NORM     = auto()
+    DSPARK_MARKOV_HEAD_A   = auto()
+    DSPARK_MARKOV_HEAD_B   = auto()
+    DSPARK_CONFIDENCE_HEAD = auto()
     DSPARK_MARKOV_W1       = auto()  # markov head: prev-token embed
     DSPARK_MARKOV_W2       = auto()  # markov head: bias projection
     DSPARK_CONF_PROJ       = auto()  # confidence head
@@ -2016,7 +2022,20 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.NEXTN_HC_HEAD_DOWN:        "blk.{bid}.nextn.hc_head_down",
     MODEL_TENSOR.NEXTN_HC_HEAD_UP:          "blk.{bid}.nextn.hc_head_up",
     MODEL_TENSOR.FC:                        "fc",
+    # dspark drafter
+    MODEL_TENSOR.DSPARK_FC:                 "dspark.fc",
+    MODEL_TENSOR.DSPARK_HIDDEN_NORM:        "dspark.hidden_norm",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_A:      "dspark.markov_head_a",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_B:      "dspark.markov_head_b",
+    MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD:    "dspark.confidence_head",
     MODEL_TENSOR.DSPARK_MARKOV_W1:          "markov_w1",
+    MODEL_TENSOR.DFLY_LAYER_FUSION:         "layer_fusion",
+    MODEL_TENSOR.DFLY_CTX_NORM:             "context_norm",
+    MODEL_TENSOR.DFLY_HC_HIDDEN_NORM:       "hidden_correction.hidden_norm",
+    MODEL_TENSOR.DFLY_HC_EMBED_NORM:        "hidden_correction.embed_norm",
+    MODEL_TENSOR.DFLY_HC_GATE:              "hidden_correction.gate",
+    MODEL_TENSOR.DFLY_HC_UP:                "hidden_correction.up",
+    MODEL_TENSOR.DFLY_HC_DOWN:              "hidden_correction.down",
     MODEL_TENSOR.DSPARK_MARKOV_W2:          "markov_w2",
     MODEL_TENSOR.DSPARK_CONF_PROJ:          "conf_proj",
     # dspark drafter
@@ -2929,6 +2948,30 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_HNORM,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+    ],
+    MODEL_ARCH.DSPARK: [
+        # dspark drafter: feature-reuse projection + small transformer trunk +
+        # lm head + two aux heads. Decoder blocks reuse the standard ATTN_*/FFN_*
+        # names.
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.DSPARK_FC,
+        MODEL_TENSOR.DSPARK_HIDDEN_NORM,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_A,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_B,
+        MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD,
     ],
     MODEL_ARCH.QWEN35MOE: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -5336,6 +5379,13 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.D2T,
         # optional DSpark heads
         MODEL_TENSOR.DSPARK_MARKOV_W1,
+        MODEL_TENSOR.DFLY_LAYER_FUSION,
+        MODEL_TENSOR.DFLY_CTX_NORM,
+        MODEL_TENSOR.DFLY_HC_HIDDEN_NORM,
+        MODEL_TENSOR.DFLY_HC_EMBED_NORM,
+        MODEL_TENSOR.DFLY_HC_GATE,
+        MODEL_TENSOR.DFLY_HC_UP,
+        MODEL_TENSOR.DFLY_HC_DOWN,
         MODEL_TENSOR.DSPARK_MARKOV_W2,
         MODEL_TENSOR.DSPARK_CONF_PROJ,
         MODEL_TENSOR.DFLASH_ATTN_CONV_BASE,

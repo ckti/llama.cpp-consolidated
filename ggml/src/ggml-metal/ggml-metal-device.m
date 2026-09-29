@@ -307,6 +307,15 @@ static NSString * ggml_metal_library_flatten_source(NSString * path_source, NSEr
     return src;
 }
 
+// tensor API headers need Metal 4.0, and an unset language version follows the build SDK
+static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, bool has_tensor) {
+    if (!has_tensor) {
+        return;
+    }
+
+    options.languageVersion = (MTLLanguageVersion) MTLLanguageVersion4_0_GGML;
+}
+
 // Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
 // source for a kind (the helper takes ownership and releases it), or nil with
 // *err set on failure. On success the objs[] slots are populated and the routing

@@ -127,6 +127,7 @@ struct llama_context {
 
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
+
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
     void set_mtp_chain(bool value);
@@ -433,9 +434,17 @@ private:
     std::vector<ggml_backend_buffer_type_t> backend_buft;
     std::vector<size_t>                     backend_buf_exp_size; // expected buffer sizes
 
-    llm_graph_result_ptr gf_res_prev;
+    // Separate arenas give batches with and without outputs distinct CUDA graph cache keys.
+    std::array<llm_graph_result_ptr, 2> gf_res_prev;
     ggml_backend_sched_ptr dspark_markov_sched;
     llm_graph_result_ptr gf_res_reserve;
+    llm_graph_result * gf_res_prev_active = nullptr;
+
+    // the Hadamard transforms this context's graphs consult: the model's own,
+    // plus the target's when the model borrows its token embeddings or output
+    // head through ctx_other (those tensors keep the target's folding)
+    llama_hadamard_rotations hadamard_rotations;
+    llama_hadamard_rotations hadamard_inverses;
 
     // one-time Hadamard transform-coverage check on the first built graph
     bool hadamard_verified = false;

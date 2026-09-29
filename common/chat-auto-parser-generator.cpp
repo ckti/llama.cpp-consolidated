@@ -376,13 +376,14 @@ common_peg_parser analyze_tools::build_tool_parser_tag_tagged(parser_build_conte
         foreach_parameter(func, [&](const common_chat_schema_property & param, const common_chat_schema_document_ptr & doc) {
             auto arg =
                 p.tool_arg(p.tool_arg_open(arguments.name_prefix + p.tool_arg_name(p.literal(param.name)) +
-                                           arguments.name_suffix) +
+                           arguments.name_suffix) +
                            arguments.value_prefix +
-                           (schema_info.resolves_to_string(param_schema) ?
-                                p.tool_arg_string_value(until_suffix) :
-                                p.tool_arg_json_value(p.schema(
-                                    p.json(), "tool-" + name + "-arg-" + param_name + "-schema", param_schema, false))) +
-                           p.tool_arg_close(p.literal(arguments.value_suffix)));
+                           (param.schema->may_be_string() ?
+                                p.ac(p.tool_arg_string_value(until_suffix) +
+                                    p.tool_arg_close(p.literal(arguments.value_suffix)), arguments.value_suffix) :
+                                (p.tool_arg_json_value(p.schema(
+                                    p.json(), "tool-" + name + "-arg-" + param.name + "-schema", doc, *param.schema)) +
+                                    p.tool_arg_close(p.literal(arguments.value_suffix)))));
 
             auto named_arg = p.rule("tool-" + name + "-arg-" + param.name, arg);
             if (param.required) {

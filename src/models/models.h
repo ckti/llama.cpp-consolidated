@@ -588,7 +588,6 @@ struct llama_model_qwen3 : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
-
 // dspark: EAGLE-style block-diffusion speculative-decoding drafter. Trunk is a
 // small dense Qwen3-style stack (standard llama_layer attn_*/ffn_* tensors);
 // the graph is genuinely novel per-layer (target-tap context re-projected fresh
@@ -596,6 +595,7 @@ struct llama_model_qwen3 : public llama_model_base {
 // own K/V) -- see src/models/dspark.cpp.
 struct llama_model_dspark : public llama_model_base {
     llama_model_dspark(const struct llama_model_params & params) : llama_model_base(params) {}
+
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
@@ -605,7 +605,6 @@ struct llama_model_dspark : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
-
 
 struct llama_model_qwen3moe : public llama_model_base {
     llama_model_qwen3moe(const struct llama_model_params & params) : llama_model_base(params) {}

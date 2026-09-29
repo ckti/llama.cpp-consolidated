@@ -208,7 +208,8 @@ LLAMA_API void llama_set_dspark_ctx(
         struct llama_context * ctx,
         const float           * feat,
               int64_t           n_ctx_rows,
-              int64_t           n_embd_cap);
+              int64_t           n_embd_cap,
+        const int32_t         * pos = nullptr);
 //
 // dspark drafter: model-level metadata + auxiliary-head weights
 //
@@ -235,6 +236,7 @@ struct llama_dspark_meta {
     int32_t block_size    = 0;
     int32_t mask_token_id = 0;
     int64_t markov_rank   = 0; // 0 if the checkpoint has no markov head
+    bool    graph_corrected = false; // greedy predecessor chain already applied on device
 };
 // Returns false if `model` is not a loaded dspark model (block_size == 0).
 LLAMA_API bool llama_model_dspark_get_meta(

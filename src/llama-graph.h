@@ -868,6 +868,11 @@ struct llm_graph_params {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_dspark_ctx       * dspark_ctx;
+    bool                           dspark_has_context;
+    int64_t                        dspark_ctx_rows;
+    int64_t                        dspark_ctx_width;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
 
     const llama_prec_policy * prec_policy = nullptr;
 
@@ -928,6 +933,12 @@ struct llm_graph_params {
             return false;
         }
 
+        if ((dspark_ctx == nullptr) != (other.dspark_ctx == nullptr) ||
+            dspark_has_context != other.dspark_has_context || dspark_ctx_rows != other.dspark_ctx_rows ||
+            dspark_ctx_width != other.dspark_ctx_width) {
+            return false;
+        }
+
         if (n_outputs != other.n_outputs) {
             return false;
         }
@@ -951,6 +962,10 @@ struct llm_graph_params {
         }
 
         // TODO: https://github.com/ggml-org/llama.cpp/pull/24340#discussion_r3448035248
+        if (cparams.n_capture_layers != other.cparams.n_capture_layers ||
+            cparams.capture_layer_idx != other.cparams.capture_layer_idx) {
+            return false;
+        }
         if (cparams.nextn_layer_offset != other.cparams.nextn_layer_offset) {
             return false;
         }
@@ -1031,6 +1046,7 @@ public:
     std::vector<ggml_tensor *> t_sampled_logits;
     std::vector<ggml_tensor *> t_candidates;
     std::vector<ggml_tensor *> t_sampled;
+    std::vector<ggml_tensor *> t_dspark_greedy;
     std::vector<llm_graph_fused_node> fused_nodes;
     std::vector<ggml_tensor *> t_sampled_probs;
 
@@ -1116,6 +1132,15 @@ struct llm_graph_context {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_dspark_ctx       * dspark_ctx;
+    bool                           dspark_has_context;
+    int64_t                        dspark_ctx_rows;
+    int64_t                        dspark_ctx_width;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
+
+    // Transforms shared by folded weights on the same activation. Key is (input, rotation);
+    // both must match. Valid for one graph build only.
+    mutable std::map<std::pair<const ggml_tensor *, const ggml_tensor *>, ggml_tensor *> hadamard_memo;
 
     const llama_prec_policy * prec_policy;
 
@@ -1153,6 +1178,12 @@ struct llm_graph_context {
               ggml_tensor * cur, // ggml_tensor * b
               ggml_tensor * ids,
               ggml_tensor * w_s = nullptr) const;
+
+    // read rows of a token-embedding table; a Hadamard-latent table gets the
+    // inverse transform so the result is in the primal basis
+    ggml_tensor * build_embd_rows(
+              ggml_tensor * tok_embd,
+              ggml_tensor * ids) const;
 
     ggml_tensor * build_norm(
              ggml_tensor * cur,

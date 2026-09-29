@@ -722,6 +722,16 @@ struct llama_model {
     struct ggml_tensor * dflash_selector_next   = nullptr;
     struct ggml_tensor * dflash_selector_hidden = nullptr;
 
+    // AngelSpec DFly: per-draft-layer target-context fusion + TreeFlash predecessor correction.
+    // dfly_layer_fusion is the discriminant: present => DFly, absent => plain DFlash/DSpark.
+    struct ggml_tensor * dfly_layer_fusion  = nullptr; // [n_ctx_feat, n_layer] fusion logits
+    struct ggml_tensor * dfly_ctx_norm      = nullptr; // post-fusion context norm (replaces output_norm_enc)
+    struct ggml_tensor * dfly_hc_hidden_norm = nullptr;
+    struct ggml_tensor * dfly_hc_embed_norm  = nullptr;
+    struct ggml_tensor * dfly_hc_gate        = nullptr; // [2*n_embd, n_ff_hc]
+    struct ggml_tensor * dfly_hc_up          = nullptr; // [2*n_embd, n_ff_hc]
+    struct ggml_tensor * dfly_hc_down        = nullptr; // [n_ff_hc, n_embd]
+
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;
     // dflash
@@ -768,6 +778,7 @@ struct llama_model {
     std::unordered_map<std::string, uint32_t> hadamard_inverse_blocks;
     std::map<uint32_t, std::vector<int32_t>> hadamard_sign_data;
     bool hadamard_gdn_v_grouped = false;
+    bool hadamard_tied_output = false;
     llama_hadamard_rotations hadamard_rotations;
     llama_hadamard_rotations hadamard_inverses;
 

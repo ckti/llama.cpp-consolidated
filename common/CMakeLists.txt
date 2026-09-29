@@ -84,6 +84,8 @@ add_library(${TARGET}
     imatrix-loader.cpp
     imatrix-loader.h
     json-schema-to-grammar.cpp
+    json-schema.cpp
+    json-schema.h
     kv-mean-center.cpp
     kv-mean-center.h
     json.cpp

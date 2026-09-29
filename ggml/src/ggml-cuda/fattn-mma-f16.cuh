@@ -4,6 +4,7 @@
 #include "cp-async.cuh"
 #include "mma.cuh"
 #include "fattn-common.cuh"
+#include "fattn-swizzle.cuh"
 
 using namespace ggml_cuda_mma;
 

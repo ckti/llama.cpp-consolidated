@@ -1211,7 +1211,7 @@ static void set_rows_cuda_turbo4(
 // thread, per-element index math and idx load). For wide contiguous rows (e.g.
 // recurrent-state snapshots, D = S_v*S_v*H elements per row) resolve the
 // destination row once per block and stream the row with float4 accesses.
-template <typename idx_t>
+template <typename idx_t, bool DstRowBase>
 static __global__ void k_set_rows_wide_f32(const char * __restrict__ src0,
                                            const idx_t * __restrict__ src1,
                                            char * __restrict__ dst,
@@ -1227,7 +1227,8 @@ static __global__ void k_set_rows_wide_f32(const char * __restrict__ src0,
                                            const size_t  nb2,
                                            const size_t  nb3,
                                            const uint3   ne11_fd,
-                                           const uint3   ne12_fd) {
+                                           const uint3   ne12_fd,
+                                           const int64_t dst_row_base) {
     const int64_t i01 = blockIdx.y;
     const int64_t i02 = blockIdx.z % ne02;
     const int64_t i03 = blockIdx.z / ne02;
@@ -1236,7 +1237,8 @@ static __global__ void k_set_rows_wide_f32(const char * __restrict__ src0,
     const int64_t i12 = fastmodulo((uint32_t) i03, ne12_fd);
 
     ggml_cuda_pdl_sync();
-    const int64_t dst_row = *(src1 + i01*s10 + i11*s11 + i12*s12);
+    const int64_t src1_row = *(src1 + i01*s10 + i11*s11 + i12*s12);
+    const int64_t dst_row  = DstRowBase ? src1_row - dst_row_base : src1_row;
     ggml_cuda_pdl_lc();
 
     const float4 * src_row     = (const float4 *) (src0 + i01*nb01 + i02*nb02 + i03*nb03);
@@ -1247,8 +1249,10 @@ static __global__ void k_set_rows_wide_f32(const char * __restrict__ src0,
     }
 }
 
-template<typename src_t, typename idx_t>
-static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+template<typename src_t, typename idx_t, bool DstRowBase = false>
+static void set_rows_cuda(
+        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1,
+        ggml_tensor * dst, const int64_t dst_row_base = 0) {
     const src_t * src0_d = (const src_t *)src0->data;
     const idx_t * src1_d = (const idx_t *)src1->data;
 
@@ -1274,11 +1278,11 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_size, block_size, 0, stream);
-            ggml_cuda_kernel_launch(k_set_rows_wide_f32<idx_t>, launch_params,
+            ggml_cuda_kernel_launch(k_set_rows_wide_f32<idx_t, DstRowBase>, launch_params,
                 (const char *) src0->data, src1_d, (char *) dst->data,
                 nv00, ne02, nb01, nb02, nb03,
                 (int64_t) (nb10/sizeof(idx_t)), (int64_t) (nb11/sizeof(idx_t)), (int64_t) (nb12/sizeof(idx_t)),
-                nb1, nb2, nb3, ne11_fd, ne12_fd);
+                nb1, nb2, nb3, ne11_fd, ne12_fd, dst_row_base);
         }
         return;
     }

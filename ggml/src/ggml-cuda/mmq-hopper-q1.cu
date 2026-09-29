@@ -438,8 +438,8 @@ bool ggml_cuda_mul_mat_q1_hopper(ggml_backend_cuda_context & ctx,
                                  const ggml_tensor *         src1,
                                  ggml_tensor *               dst) {
 #if defined(GGML_USE_HOPPER_Q1)
-    static const bool enabled = getenv("GGML_HOPPER_Q1") != nullptr;
-    if (!enabled) {
+    static const bool disabled = getenv("GGML_HOPPER_Q1_DISABLE") != nullptr;
+    if (disabled) {
         return false;
     }
     const int     cc = ggml_cuda_info().devices[ctx.device].cc;

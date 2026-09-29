@@ -1367,9 +1367,17 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     }
 
     uint32_t hadamard_version = 0;
+    ml.get_key("prism.hadamard.tied_output", hadamard_tied_output, false);
     if (ml.get_key("prism.hadamard.version", hadamard_version, false)) {
-        if (hadamard_version != 1) {
+        if (hadamard_version != 1 && hadamard_version != 2) {
             throw std::runtime_error(format("unsupported prism.hadamard.version: %u", hadamard_version));
+        }
+
+        if ((hadamard_version == 2) != hadamard_tied_output) {
+            throw std::runtime_error("prism.hadamard version 2 requires tied_output=true; version 1 forbids it");
+        }
+        if (hadamard_tied_output && ml.get_weight("output.weight")) {
+            throw std::runtime_error("prism.hadamard.tied_output requires output.weight to be absent");
         }
 
         uint32_t block_size = 0;
@@ -1441,6 +1449,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
             case LLM_ARCH_QWEN35:
             case LLM_ARCH_QWEN35MOE:
             case LLM_ARCH_QWEN3NEXT:
+            case LLM_ARCH_DSPARK:
                 break;
             default:
                 throw std::runtime_error(format(
@@ -1480,7 +1489,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
         };
 
         for (const auto & weight_name : weight_names) {
-            if (!is_foldable_weight(weight_name)) {
+            if (!is_foldable_weight(weight_name) || (arch == LLM_ARCH_DSPARK && weight_name != "output.weight")) {
                 throw std::runtime_error(format(
                     "prism.hadamard: weight '%s' is not on a verified Hadamard-aware matmul path", weight_name.c_str()));
             }
@@ -1496,7 +1505,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
         for (const auto & name : inverse_names) {
             // the graph applies the inverse only to the token-embedding lookup; any
             // other latent table would load and silently stay rotated
-            if (name != "token_embd.weight") {
+            if (name != "token_embd.weight" || arch == LLM_ARCH_DSPARK) {
                 throw std::runtime_error(format(
                     "prism.hadamard: weight '%s' is not a verified inverse-after-lookup table", name.c_str()));
             }
@@ -1504,6 +1513,19 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
                 throw std::runtime_error(format("duplicate prism.hadamard inverse weight: %s", name.c_str()));
             }
         }
+    }
+
+    if (hadamard_tied_output) {
+        if (hadamard_version != 2) {
+            throw std::runtime_error("prism.hadamard.tied_output requires version 2");
+        }
+        const auto it = hadamard_inverse_blocks.find("token_embd.weight");
+        if (it == hadamard_inverse_blocks.end()) {
+            throw std::runtime_error("prism.hadamard.tied_output requires a latent token embedding");
+        }
+        hadamard_weight_blocks.emplace("token_embd.weight", it->second);
+    } else if (hadamard_inverse_blocks.count("token_embd.weight") && !ml.get_weight("output.weight")) {
+        throw std::runtime_error("a tied Hadamard output requires version 2 and tied_output=true");
     }
 
     // get general kv
@@ -1694,6 +1716,9 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
 }
 
 bool llama_model_base::load_tensors(llama_model_loader & ml) {
+    if (params.dspark_head_source && arch != LLM_ARCH_DSPARK) {
+        throw std::runtime_error("Shared target head is supported only for DSpark");
+    }
     const auto & split_mode   = params.split_mode;
     const bool use_mlock      = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
     const auto & tensor_split = params.tensor_split;
@@ -2184,6 +2209,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             const std::string & weight_name = entry.first;
             const uint32_t block_size = entry.second;
             const ggml_tensor * weight = get_tensor(weight_name.c_str());
+            if (hadamard_tied_output && weight_name == "token_embd.weight") {
+                weight = target == &hadamard_rotations ? output : tok_embd;
+                if (!weight || strcmp(weight->name, "token_embd.weight") != 0) {
+                    throw std::runtime_error("prism.hadamard.tied_output is not bound to the token embedding");
+                }
+            }
             if (weight == nullptr) {
                 throw std::runtime_error(format("prism.hadamard weight not found: %s", weight_name.c_str()));
             }
@@ -2197,6 +2228,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
 
             ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(weight->buffer);
+            // CPU extra buffer types (e.g. CPU_REPACK) only accept tensors they can repack
+            if (ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft)) {
+                if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                    buft = ggml_backend_dev_buffer_type(dev);
+                }
+            }
             if (target == &hadamard_rotations) {
                 preferred_buft = buft;
             } else if (preferred_buft) {
@@ -3244,6 +3281,7 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
 
 llama_model_params llama_model_default_params() {
     llama_model_params result = {
+        /*.dspark_head_source        =*/ nullptr,
         /*.devices                     =*/ nullptr,
         /*.tensor_buft_overrides       =*/ nullptr,
         /*.n_gpu_layers                =*/ -1,
