@@ -165,11 +165,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
-    # TODO: disabled on loongarch64 because the ggml-ci node lacks Python 3.8
-    if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "loongarch64")
-        llama_build_and_test(test-json-schema-to-grammar.cpp   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-        target_include_directories(test-json-schema-to-grammar PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
-    endif()
+    llama_build_and_test(test-json-schema-to-grammar.cpp)
 
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)
@@ -214,42 +210,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         FIXTURES_SETUP generate-models
     )
 
+    # Test recurrent-state rollback across all architectures, using the generated dummy models
     llama_test(
         test-recurrent-state-rollback
         LABEL main
-        ARGS -m "${MODEL_DIR}/qwen35-dense.gguf"
+        ARGS --models "${MODEL_DIR}"
     )
-    set_tests_properties(test-recurrent-state-rollback PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-nemotron-h
-        LABEL main
-        ARGS -m "${MODEL_DIR}/nemotron_h-dense.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-nemotron-h PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-dsv4
-        LABEL main
-        ARGS -m "${MODEL_DIR}/deepseek4-moe.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-dsv4 PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-kimi-k3
-        LABEL main
-        ARGS -m "${MODEL_DIR}/kimi-k3-moe.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
+    set_tests_properties(test-recurrent-state-rollback PROPERTIES FIXTURES_REQUIRED generate-models)
 
     # Test state save/load functionality across all architectures, using the generated dummy models
     llama_test(
@@ -265,6 +232,7 @@ endif()
 llama_build_and_test(test-chat-peg-parser.cpp peg-parser/simple-tokenize.cpp)
 llama_build_and_test(test-jinja.cpp)
 llama_test(test-jinja NAME test-jinja-py ARGS -py LABEL python)
+llama_build_and_test(test-json-schema.cpp)
 llama_build_and_test(test-chat-auto-parser.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 llama_build_and_test(test-chat-template.cpp)
 # debug tool for chat template differential analysis (not registered as a test, run it manually)
@@ -299,7 +267,7 @@ add_test(NAME test-download-model COMMAND ${CMAKE_COMMAND}
     -DDEST=${MODEL_DEST}
     -DNAME=${MODEL_NAME}
     -DHASH=${MODEL_HASH}
-    -P ${CMAKE_SOURCE_DIR}/cmake/download-models.cmake
+    -P ${PROJECT_SOURCE_DIR}/cmake/download-models.cmake
 )
 set_tests_properties(test-download-model PROPERTIES FIXTURES_SETUP test-download-model)
 
@@ -342,12 +310,14 @@ endif()
 
 llama_build_and_test(test-moe-cache-fit.cpp)
 
+llama_build_and_test(test-tiled-mulmat.cpp)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp       LABEL "model")
 llama_build_and_test(test-backend-sampler.cpp   LABEL "model")
 
 # Test for state restore with fragmented KV cache
 # Requires a model, uses same args pattern as test-thread-safety
+# TODO: run on all dummy models
 llama_build_and_test(test-state-restore-fragmented.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-state-restore-fragmented PROPERTIES FIXTURES_REQUIRED test-download-model)
 
@@ -355,7 +325,7 @@ if (APPLE)
     llama_build(test-rset-release.cpp)
 endif()
 
-if (NOT GGML_BACKEND_DL)
+if (NOT GGML_BACKEND_DL AND GGML_CPU)
     # these tests use the backends directly and cannot be built with dynamic loading
     llama_build_and_test(test-barrier.cpp)
     llama_build_and_test(test-quantize-fns.cpp)
