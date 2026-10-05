@@ -235,6 +235,7 @@ struct sycl_device_info {
     sycl_hw_info hw_info;
     optimize_feature opt_feature;
     bool    usm_system_support; // support for USM system allocations
+    int     dpas_exec_size;     // XMX DPAS width (8 or 16) for int8, 0 without XMX
 };
 
 
