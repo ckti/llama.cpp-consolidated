@@ -1119,7 +1119,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
                     // for 3 columns we stay on ext. GGML_METAL_Q2_0_NR1=1 disables.
                     nr1 = 2; suffix = "_nr1_2";
                 }
-            } break;
+            }
+            break;
         case GGML_TYPE_Q4_0:
             {
                 nsg = N_SG_Q4_0;

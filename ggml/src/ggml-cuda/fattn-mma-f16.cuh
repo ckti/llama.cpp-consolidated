@@ -405,6 +405,22 @@ static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(
 #endif // CP_ASYNC_AVAILABLE
 }
 
+// K/V read straight from a quantized cache. The tile loader dequantizes into the F16 shared tile, so there is no
+// F16 copy of the whole cache in the compute buffer (n_ctx*D*n_head_kv*2 bytes for K and again for V, reserved
+// for the worst case at graph allocation) and no full-cache conversion pass per micro-batch. cp.async cannot
+// dequantize, so these variants always run the single-stage register loader.
+static constexpr __host__ __device__ bool ggml_cuda_fattn_mma_kv_native(const ggml_type type_KV) {
+    return type_KV == GGML_TYPE_Q4_0 || type_KV == GGML_TYPE_Q8_0;
+}
+
+static __host__ int ggml_cuda_fattn_mma_get_nstages(const int DKQ, const int DV, const int ncols1, const int ncols2, const int cc, const ggml_type type_KV) {
+    return type_KV == GGML_TYPE_F16 ? ggml_cuda_fattn_mma_get_nstages(DKQ, DV, ncols1, ncols2, cc) : 0;
+}
+
+static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(const int DKQ, const int DV, const int ncols1, const int ncols2, const ggml_type type_KV) {
+    return type_KV == GGML_TYPE_F16 ? ggml_cuda_fattn_mma_get_nstages(DKQ, DV, ncols1, ncols2) : 0;
+}
+
 // ------------------------------------------------------------------------------------------------------------------
 
 template<int stride_tile, int nwarps, int nbatch_fa, bool use_cp_async, bool oob_check, bool use_sparse>
@@ -858,6 +874,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
     constexpr bool swz = ggml_cuda_fattn_mma_get_swizzled(DKQ, DV, ncols);
     constexpr int stride_tile_K = swz ? nbatch_K2 : nbatch_K2 + 4;
     constexpr int stride_tile_V = V_is_K_view ? stride_tile_K : (swz ? nbatch_V2 : nbatch_V2 + 4);
+
+    // For quantized K/V, stride_K / stride_V are byte strides and the loader dequantizes block pairs (64 weights).
+    static_assert(type_KV == GGML_TYPE_F16 || ((2*nbatch_K2) % 64 == 0 && (2*nbatch_V2) % 64 == 0 && !V_is_K_view),
+        "quantized K/V loading needs whole block pairs per pass");
 
     const int k_VKQ_0 = kb0 * nbatch_fa;
 #if defined(TURING_MMA_AVAILABLE)
@@ -2315,13 +2335,22 @@ static void ggml_cuda_flash_attn_ext_mma_f16_case_impl(
 
     constexpr int ncols = ncols1 * ncols2;
 
+    if constexpr (type_KV != GGML_TYPE_F16) {
+        // The kernel reads the quantized cache in place: same K/V type, whole block pairs per row, word-aligned rows.
+        const ggml_tensor * K = dst->src[1];
+        const ggml_tensor * V = dst->src[2];
+        GGML_ASSERT(K->type == type_KV && V->type == type_KV);
+        GGML_ASSERT(K->nb[1] % 4 == 0 && K->nb[2] % 4 == 0 && K->nb[3] % 4 == 0);
+        GGML_ASSERT(V->nb[1] % 4 == 0 && V->nb[2] % 4 == 0 && V->nb[3] % 4 == 0);
+    }
+
     const int  nthreads       = ggml_cuda_fattn_mma_get_nthreads      (DKQ, DV, ncols, cc);
     const int  nbatch_fa      = ggml_cuda_fattn_mma_get_nbatch_fa     (DKQ, DV, ncols, cc);
     const int  nbatch_K2      = ggml_cuda_fattn_mma_get_nbatch_K2     (DKQ, DV, ncols, cc);
     const int  nbatch_V2      = ggml_cuda_fattn_mma_get_nbatch_V2     (DKQ, DV, ncols, cc);
     const int  nbatch_combine = ggml_cuda_fattn_mma_get_nbatch_combine(DKQ, DV, ncols, cc);
     const bool Q_in_reg       = ggml_cuda_fattn_mma_get_Q_in_reg      (DKQ, DV, ncols, cc);
-    const int  nstages        = ggml_cuda_fattn_mma_get_nstages       (DKQ, DV, ncols1, ncols2, cc);
+    const int  nstages        = ggml_cuda_fattn_mma_get_nstages       (DKQ, DV, ncols1, ncols2, cc, type_KV);
 
     const int cols_per_warp = std::min(ncols, get_cols_per_warp(cc));
     const int warp_size_host = ggml_cuda_info().devices[ctx.device].warp_size;
@@ -2428,6 +2457,58 @@ void ggml_cuda_flash_attn_ext_mma_f16_partial_case(
 #define DECL_FATTN_MMA_F16_CASE(DKQ, DV, ncols1, ncols2)                          \
     template void ggml_cuda_flash_attn_ext_mma_f16_case                           \
     <DKQ, DV, ncols1, ncols2>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
+
+// In-place quantized K/V variants, instantiated for the head sizes and GQA tilings a quantized cache is served with.
+#define DECL_FATTN_MMA_F16_CASE_KV(DKQ, DV, ncols1, ncols2, type_KV)                       \
+    template void ggml_cuda_flash_attn_ext_mma_f16_case                                    \
+    <DKQ, DV, ncols1, ncols2, type_KV>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
+
+#define DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(DKQ, DV, ncols, type_KV)   \
+    extern DECL_FATTN_MMA_F16_CASE_KV(DKQ, DV, (ncols)/ 1,  1, type_KV); \
+    extern DECL_FATTN_MMA_F16_CASE_KV(DKQ, DV, (ncols)/ 2,  2, type_KV); \
+    extern DECL_FATTN_MMA_F16_CASE_KV(DKQ, DV, (ncols)/ 4,  4, type_KV); \
+    extern DECL_FATTN_MMA_F16_CASE_KV(DKQ, DV, (ncols)/ 8,  8, type_KV); \
+
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128,  8, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 16, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 32, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 64, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256,  8, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 16, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 32, GGML_TYPE_Q4_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 64, GGML_TYPE_Q4_0)
+
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128,  8, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 16, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 32, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(128, 128, 64, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256,  8, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 16, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 32, GGML_TYPE_Q8_0)
+DECL_FATTN_MMA_F16_CASE_KV_ALL_NCOLS2(256, 256, 64, GGML_TYPE_Q8_0)
+
+// Head sizes with in-place quantized K/V kernels (matches the instantiations above).
+static inline bool ggml_cuda_fattn_mma_kv_native_supported(const ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+    GGML_UNUSED(dst);
+    return false;
+#else
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+    if (!GGML_CUDA_CC_IS_NVIDIA(cc)) {
+        return false;
+    }
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    if (K->type != V->type || !ggml_cuda_fattn_mma_kv_native(K->type)) {
+        return false;
+    }
+    if (!(Q->ne[0] == 128 || Q->ne[0] == 256) || V->ne[0] != Q->ne[0]) {
+        return false;
+    }
+    return ggml_cuda_is_aligned(K, 4) && ggml_cuda_is_aligned(V, 4);
+#endif
+}
 
 #define DECL_FATTN_MMA_F16_CASE_ALL_NCOLS2(DKQ, DV, ncols)   \
     extern DECL_FATTN_MMA_F16_CASE(DKQ, DV, (ncols)/ 1,  1); \
