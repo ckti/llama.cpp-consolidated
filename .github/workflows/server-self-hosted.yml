@@ -28,6 +28,10 @@ on:
       'tools/server/**.*'
     ]
 
+cache-mode: none
+permissions:
+  contents: read
+
 env:
   LLAMA_ARG_LOG_COLORS: 1
   LLAMA_ARG_LOG_PREFIX: 1
@@ -100,7 +104,7 @@ jobs:
           PYTEST_WORKERS=1 ./tests.sh
 
   server-cuda:
-    runs-on: "hf-jobs-t4-small:cuda13"
+    runs-on: "hf-jobs-t4-medium:cuda13"
 
     steps:
       - name: Clone
