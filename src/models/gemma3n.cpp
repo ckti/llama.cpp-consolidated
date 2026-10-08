@@ -1,8 +1,10 @@
 #include "models.h"
 
 void llama_model_gemma3n::load_arch_hparams(llama_model_loader & ml) {
+    uint32_t swa_period = 5;
+    ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, swa_period, false);
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
-    load_swa_pattern(ml, 5);
+    hparams.set_swa_pattern(swa_period);
 
     hparams.n_layer_kv_from_start = 20;
     hparams.f_attention_scale     = 1.0f;
@@ -96,8 +98,10 @@ llama_model_gemma3n::graph::graph(const llama_model & model, const llm_graph_par
     ggml_tensor * cur;
     ggml_tensor * inpL;
 
+    inpL = build_inp_embd(model.tok_embd);
+
     // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
-    inpL = build_inp_embd(model.tok_embd, sqrtf(n_embd));
+    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
     cb(inpL, "inp_scaled", -1);
 
     // inp_pos - contains the positions
@@ -323,7 +327,6 @@ ggml_tensor * llama_model_gemma3n::graph::build_inp_per_layer() {
     auto inp = std::make_unique<llm_graph_input_embd>(n_embd);
     ggml_tensor * inp_per_layer;
     float tok_embd_scale = sqrtf((float) n_embd_altup);
-    // mixed ubatch: embd rows have token id 0, same padding row as below
     if (ubatch.token) {
         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
         ggml_set_input(inp->tokens);

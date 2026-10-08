@@ -48,8 +48,6 @@ class TensorNameMap:
         # Token type embeddings
         MODEL_TENSOR.TOKEN_TYPES: (
             "embeddings.token_type_embeddings",  # bert nomic-bert
-            "type_emb",  # laya
-            "joint_head.type_embedding",  # clef
         ),
 
         # Normalization of token embeddings
@@ -97,7 +95,6 @@ class TensorNameMap:
         ),
         # Output norm
         MODEL_TENSOR.OUTPUT_NORM: (
-            "model.final_norm",         # dfly
             "gpt_neox.final_layer_norm",               # gptneox
             "transformer.ln_f",                        # gpt2 gpt-j falcon jais exaone
             "model.norm",                              # llama-hf baichuan internlm2 olmoe olmo2 phimoe plamo2
@@ -219,7 +216,6 @@ class TensorNameMap:
             "layers.{bid}.input_layernorm",                         # qwen3-embedding
             "model.layers.{bid}.attention_layernorm",               # apertus
             "model.layers.{bid}.pre_attention_layernorm",           # kormo
-            "head.layers.{bid}.norm1",  # laya
         ),
 
         # Attention norm 2
@@ -254,7 +250,6 @@ class TensorNameMap:
             "layers.{bid}.attn.Wqkv",                                              # modern-bert
             "model.layers.{bid}.self_attn.language_expert_query_key_value",        # cogvlm
             "model.layers.{bid}.linear_attn.in_proj_qkv",                          # qwen3.5
-            "head.layers.{bid}.self_attn.in_proj",  # laya
         ),
 
         # Attention query
@@ -360,7 +355,6 @@ class TensorNameMap:
             "backbone.layers.{bid}.mixer.o_proj",                           # nemotron-h
             "model.layers.{bid}.self_attn.language_expert_dense",           # cogvlm
             "model.blocks.{bid}.attn.attn_resid",                           # talkie
-            "head.layers.{bid}.self_attn.out_proj",  # laya
         ),
 
         # Attention output norm
@@ -426,8 +420,7 @@ class TensorNameMap:
             "layers.{bid}.post_attention_layernorm",                         # qwen3-embedding
             "model.layers.{bid}.feedforward_layernorm",                      # apertus
             "model.layers.{bid}.pre_mlp_layernorm",                          # kormo
-            "layers.{bid}.mlp_norm",                                         # modern-bert
-            "head.layers.{bid}.norm2",  # laya
+            "layers.{bid}.mlp_norm"                                          # modern-bert
         ),
 
         # Pre feed-forward norm
@@ -540,7 +533,6 @@ class TensorNameMap:
             "backbone.layers.{bid}.mixer.up_proj",                    # nemotron-h
             "model.layers.{bid}.mlp.language_mlp.up_proj",            # cogvlm
             "model.blocks.{bid}.mlp.mlp_linear",                      # talkie
-            "head.layers.{bid}.linear1",  # laya
         ),
 
         MODEL_TENSOR.FFN_UP_EXP: (
@@ -671,7 +663,6 @@ class TensorNameMap:
             "backbone.layers.{bid}.mixer.down_proj",                  # nemotron-h
             "model.layers.{bid}.mlp.language_mlp.down_proj",          # cogvlm
             "model.blocks.{bid}.mlp.mlp_resid",                       # talkie
-            "head.layers.{bid}.linear2",  # laya
         ),
 
         MODEL_TENSOR.FFN_DOWN_EXP: (
@@ -1183,27 +1174,22 @@ class TensorNameMap:
 
         MODEL_TENSOR.DEC_ATTN_NORM: (
             "decoder.block.{bid}.layer.0.layer_norm", # t5
-            "joint_head.layers.{bid}.norm1",  # clef
         ),
 
         MODEL_TENSOR.DEC_ATTN_Q: (
             "decoder.block.{bid}.layer.0.SelfAttention.q", # t5
-            "joint_head.layers.{bid}.self_attn.q",  # clef
         ),
 
         MODEL_TENSOR.DEC_ATTN_K: (
             "decoder.block.{bid}.layer.0.SelfAttention.k", # t5
-            "joint_head.layers.{bid}.self_attn.k",  # clef
         ),
 
         MODEL_TENSOR.DEC_ATTN_V: (
             "decoder.block.{bid}.layer.0.SelfAttention.v", # t5
-            "joint_head.layers.{bid}.self_attn.v",  # clef
         ),
 
         MODEL_TENSOR.DEC_ATTN_OUT: (
             "decoder.block.{bid}.layer.0.SelfAttention.o", # t5
-            "joint_head.layers.{bid}.self_attn.out_proj",  # clef
         ),
 
         MODEL_TENSOR.DEC_ATTN_REL_B: (
@@ -1212,32 +1198,22 @@ class TensorNameMap:
 
         MODEL_TENSOR.DEC_CROSS_ATTN_NORM: (
             "decoder.block.{bid}.layer.1.layer_norm", # t5
-            "joint_head.layers.{bid}.norm2",  # clef
-            "joint_head.evidence_layers.{bid}.query_norm",  # clef
         ),
 
         MODEL_TENSOR.DEC_CROSS_ATTN_Q: (
             "decoder.block.{bid}.layer.1.EncDecAttention.q", # t5
-            "joint_head.layers.{bid}.multihead_attn.q",  # clef
-            "joint_head.evidence_layers.{bid}.attention.q",  # clef
         ),
 
         MODEL_TENSOR.DEC_CROSS_ATTN_K: (
             "decoder.block.{bid}.layer.1.EncDecAttention.k", # t5
-            "joint_head.layers.{bid}.multihead_attn.k",  # clef
-            "joint_head.evidence_layers.{bid}.attention.k",  # clef
         ),
 
         MODEL_TENSOR.DEC_CROSS_ATTN_V: (
             "decoder.block.{bid}.layer.1.EncDecAttention.v", # t5
-            "joint_head.layers.{bid}.multihead_attn.v",  # clef
-            "joint_head.evidence_layers.{bid}.attention.v",  # clef
         ),
 
         MODEL_TENSOR.DEC_CROSS_ATTN_OUT: (
             "decoder.block.{bid}.layer.1.EncDecAttention.o", # t5
-            "joint_head.layers.{bid}.multihead_attn.out_proj",  # clef
-            "joint_head.evidence_layers.{bid}.attention.out_proj",  # clef
         ),
 
         MODEL_TENSOR.DEC_CROSS_ATTN_REL_B: (
@@ -1246,8 +1222,6 @@ class TensorNameMap:
 
         MODEL_TENSOR.DEC_FFN_NORM: (
             "decoder.block.{bid}.layer.2.layer_norm", # t5
-            "joint_head.layers.{bid}.norm3",  # clef
-            "joint_head.evidence_layers.{bid}.feedforward_norm",  # clef
         ),
 
         MODEL_TENSOR.DEC_FFN_GATE: (
@@ -1257,70 +1231,14 @@ class TensorNameMap:
         MODEL_TENSOR.DEC_FFN_UP: (
             "decoder.block.{bid}.layer.2.DenseReluDense.wi",   # t5
             "decoder.block.{bid}.layer.2.DenseReluDense.wi_1", # flan-t5
-            "joint_head.layers.{bid}.linear1",  # clef
-            "joint_head.evidence_layers.{bid}.feedforward.0",  # clef
         ),
 
         MODEL_TENSOR.DEC_FFN_DOWN: (
             "decoder.block.{bid}.layer.2.DenseReluDense.wo", # t5
-            "joint_head.layers.{bid}.linear2",  # clef
-            "joint_head.evidence_layers.{bid}.feedforward.3",  # clef
         ),
 
         MODEL_TENSOR.DEC_OUTPUT_NORM: (
             "decoder.final_layer_norm", # t5
-        ),
-
-        MODEL_TENSOR.DEC_CROSS_ATTN_NORM_KV: (
-            "joint_head.evidence_layers.{bid}.memory_norm",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_HIDDEN_NORM: (
-            "joint_head.hidden_norm",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_MEMORY: (
-            "joint_head.memory_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_QUESTION: (
-            "joint_head.question_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_OPTION_QUESTION: (
-            "joint_head.option_question_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_GLOBAL: (
-            "joint_head.global_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_OPTION_CONTEXT: (
-            "joint_head.option_context_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_PROJ_OPTION_LEXICAL: (
-            "joint_head.option_lexical_projection",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_OPTION_SUMMARY_NORM: (
-            "joint_head.option_summary_norm",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_FIELD_NORM: (
-            "joint_head.field_norm",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_OPTION_NORM: (
-            "joint_head.option_norm",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_SCORER: (
-            "joint_head.residual_scorer.0",  # clef
-        ),
-
-        MODEL_TENSOR.DECISION_SCORER_OUT: (
-            "joint_head.residual_scorer.3",  # clef
         ),
 
         MODEL_TENSOR.ENC_ATTN_NORM: (
@@ -1401,14 +1319,6 @@ class TensorNameMap:
             "model.layers.{bid}.self_attn.indexer.wq_b", # DSA
         ),
 
-        MODEL_TENSOR.INDEXER_KPOOL_GATE: (
-            "model.layers.{bid}.self_attn.indexer.index_kpool_compress_gate", # glm5-next
-        ),
-
-        MODEL_TENSOR.INDEXER_KPOOL_APE: (
-            "model.layers.{bid}.self_attn.indexer.index_kpool_compress_ape", # glm5-next
-        ),
-
         MODEL_TENSOR.INDEXER_Q_PROJ: (
             "model.layers.{bid}.self_attn.index_q_proj", # MSA
         ),
@@ -1423,32 +1333,26 @@ class TensorNameMap:
 
         MODEL_TENSOR.HC_ATTN_FN: (
             "model.layers.{bid}.hc_attn_layer.hc_pre.hc_fn", # hy-v4
-            "model.layers.{bid}.hc_attn_fn",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_ATTN_BASE: (
             "model.layers.{bid}.hc_attn_layer.hc_pre.hc_base", # hy-v4
-            "model.layers.{bid}.hc_attn_base",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_ATTN_SCALE: (
             "model.layers.{bid}.hc_attn_layer.hc_pre.hc_scale", # hy-v4
-            "model.layers.{bid}.hc_attn_scale",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_FFN_FN: (
             "model.layers.{bid}.hc_mlp_layer.hc_pre.hc_fn", # hy-v4
-            "model.layers.{bid}.hc_ffn_fn",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_FFN_BASE: (
             "model.layers.{bid}.hc_mlp_layer.hc_pre.hc_base", # hy-v4
-            "model.layers.{bid}.hc_ffn_base",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_FFN_SCALE: (
             "model.layers.{bid}.hc_mlp_layer.hc_pre.hc_scale", # hy-v4
-            "model.layers.{bid}.hc_ffn_scale",                 # glm5-next
         ),
 
         MODEL_TENSOR.HC_HEAD_FN: (
@@ -1473,37 +1377,8 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.FC: (
-            "model.fc",           # dflash
-            "encoder.fc",         # dflash (transformers MuseGlimmerAssistant)
-            "model.context_proj", # dfly (the shared base context projection)
-        ),
-
-        MODEL_TENSOR.DFLY_LAYER_FUSION: (
-            "model.layer_fusion_weights", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_CTX_NORM: (
-            "model.context_norm", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_HC_HIDDEN_NORM: (
-            "model.hidden_correction.hidden_norm", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_HC_EMBED_NORM: (
-            "model.hidden_correction.embed_norm", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_HC_GATE: (
-            "model.hidden_correction.gate_proj", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_HC_UP: (
-            "model.hidden_correction.up_proj", # dfly
-        ),
-
-        MODEL_TENSOR.DFLY_HC_DOWN: (
-            "model.hidden_correction.down_proj", # dfly
+            "model.fc",   # dflash
+            "encoder.fc", # dflash (transformers MuseGlimmerAssistant)
         ),
 
         MODEL_TENSOR.DSPARK_MARKOV_W1: (
@@ -1552,17 +1427,14 @@ class TensorNameMap:
             "pre_classifier",   # distillbert
             "dense",            # neobert
             "head.dense",       # modern-bert
-            "scorer.1",  # laya
         ),
 
         MODEL_TENSOR.CLS_OUT: (
             "classifier.out_proj", # roberta
-            "scorer.3",  # laya
         ),
 
         MODEL_TENSOR.CLS_NORM: (
             "head.norm", # modern-bert
-            "scorer.0",  # laya
         ),
         #############################################################################
 

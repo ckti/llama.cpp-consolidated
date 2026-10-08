@@ -144,29 +144,6 @@ if (NOT WIN32)
     )
 endif()
 
-# dspark Phase 1 forward-graph gate (Tier 1: synthetic tap features / Tier 2:
-# diff vs the DeepSpec python reference). Not wired into `ctest` since both
-# tiers need a real dspark GGUF passed on the command line; run manually.
-# Uses internal functions not exported with LLAMA_API, so like the tests below it
-# is skipped on Windows when building with shared libraries.
-if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
-    llama_build(test-dspark-forward.cpp)
-endif()
-
-# dspark loader gate for the GIDD log-SNR metadata contract: conditioning=true
-# requires finite, ordered min/max_log_snr (src/models/dspark.cpp
-# load_arch_hparams). Wired into `ctest` but skips (exit 0) until the tiny
-# random-weight variant suite is generated into the build tree:
-#   python3 tests/gen-tiny-dspark.py --suite <build>/tests/dspark-logsnr-variants
-llama_build_and_test(test-dspark-logsnr-meta.cpp LABEL "model"
-    ARGS "${CMAKE_CURRENT_BINARY_DIR}/dspark-logsnr-variants")
-
-# Requires a fixture model and reference JSON; run manually.
-llama_build(test-dspark-loop.cpp)
-
-# Requires a target/drafter pair; run manually.
-llama_build(test-dspark-real-eval.cpp)
-
 if (LLAMA_LLGUIDANCE)
     llama_build_and_test(test-grammar-llguidance.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 endif ()
@@ -185,11 +162,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-grammar-integration.cpp)
     llama_build_and_test(test-llama-grammar.cpp)
     llama_build_and_test(test-batch-alloc.cpp)
-    llama_build_and_test(test-dfly-fusion.cpp)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
-    llama_build_and_test(test-json-schema-to-grammar.cpp)
+    # TODO: disabled on loongarch64 because the ggml-ci node lacks Python 3.8
+    if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "loongarch64")
+        llama_build_and_test(test-json-schema-to-grammar.cpp   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+        target_include_directories(test-json-schema-to-grammar PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    endif()
 
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)
@@ -234,16 +214,41 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         FIXTURES_SETUP generate-models
     )
 
-    # Test recurrent-state rollback across all architectures, using the generated dummy models
     llama_test(
         test-recurrent-state-rollback
         LABEL main
-        ARGS --models "${MODEL_DIR}"
+        ARGS -m "${MODEL_DIR}/qwen35-dense.gguf"
     )
-    # abort on graph reallocations that the initial reserve should have covered
     set_tests_properties(test-recurrent-state-rollback PROPERTIES
         FIXTURES_REQUIRED generate-models
-        ENVIRONMENT "GGML_SCHED_DEBUG_REALLOC=1"
+    )
+
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-nemotron-h
+        LABEL main
+        ARGS -m "${MODEL_DIR}/nemotron_h-dense.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback-nemotron-h PROPERTIES
+        FIXTURES_REQUIRED generate-models
+    )
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-dsv4
+        LABEL main
+        ARGS -m "${MODEL_DIR}/deepseek4-moe.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback-dsv4 PROPERTIES
+        FIXTURES_REQUIRED generate-models
+    )
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-kimi-k3
+        LABEL main
+        ARGS -m "${MODEL_DIR}/kimi-k3-moe.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
+        FIXTURES_REQUIRED generate-models
     )
 
     # Test state save/load functionality across all architectures, using the generated dummy models
@@ -260,7 +265,6 @@ endif()
 llama_build_and_test(test-chat-peg-parser.cpp peg-parser/simple-tokenize.cpp)
 llama_build_and_test(test-jinja.cpp)
 llama_test(test-jinja NAME test-jinja-py ARGS -py LABEL python)
-llama_build_and_test(test-json-schema.cpp)
 llama_build_and_test(test-chat-auto-parser.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 llama_build_and_test(test-chat-template.cpp)
 # debug tool for chat template differential analysis (not registered as a test, run it manually)
@@ -295,7 +299,7 @@ add_test(NAME test-download-model COMMAND ${CMAKE_COMMAND}
     -DDEST=${MODEL_DEST}
     -DNAME=${MODEL_NAME}
     -DHASH=${MODEL_HASH}
-    -P ${PROJECT_SOURCE_DIR}/cmake/download-models.cmake
+    -P ${CMAKE_SOURCE_DIR}/cmake/download-models.cmake
 )
 set_tests_properties(test-download-model PROPERTIES FIXTURES_SETUP test-download-model)
 
@@ -303,29 +307,6 @@ llama_build_and_test(test-thread-safety.cpp ARGS -m "${MODEL_DEST}" -ngl 99 -p "
 set_tests_properties(test-thread-safety PROPERTIES FIXTURES_REQUIRED test-download-model)
 
 llama_build_and_test(test-arg-parser.cpp)
-if (NOT BUILD_SHARED_LIBS)
-    llama_build_and_test(test-kv-stream-plan.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-plan.cpp)
-    target_include_directories(test-kv-stream-plan PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    llama_build_and_test(test-kv-stream-config.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-config.cpp)
-    target_include_directories(test-kv-stream-config PRIVATE ${PROJECT_SOURCE_DIR}/src)
-endif()
-llama_build_and_test(test-kv-stream-softmax.cpp llama-kv-stream-softmax.cpp)
-if (GGML_CUDA)
-    llama_build_and_test(
-        test-kv-stream-bench-config.cpp
-        ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench/kv-stream-bench-config.cpp)
-    target_include_directories(test-kv-stream-bench-config PRIVATE ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench)
-    llama_build_and_test(test-kv-stream-cuda-buffer.cpp LABEL cuda)
-    target_include_directories(test-kv-stream-cuda-buffer PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
-    # The test exits 77 when no CUDA device is present (e.g. a CUDA build run
-    # on a GPU-less CI runner). ctest only treats that as a skip when
-    # SKIP_RETURN_CODE says so; without it the skip is recorded as a failure.
-    set_tests_properties(test-kv-stream-cuda-buffer PROPERTIES SKIP_RETURN_CODE 77)
-    llama_build_and_test(test-kv-stream-cuda-attn.cpp LABEL cuda)
-    target_include_directories(test-kv-stream-cuda-attn PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
-    llama_build_and_test(test-kv-stream-cuda-set-rows.cpp LABEL cuda)
-    target_include_directories(test-kv-stream-cuda-set-rows PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
-endif()
 llama_build_and_test(test-model-resolution.cpp)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)
@@ -334,12 +315,6 @@ llama_build_and_test(test-speculative-adaptive.cpp)
 if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
   # TODO: repair known memory leaks
   llama_build_and_test(test-opt.cpp)
-endif()
-if (GGML_METAL AND NOT GGML_BACKEND_DL)
-    # calls the Metal backend's graph optimizer and fusion table directly
-    llama_build_and_test(test-metal-graph-optimize.cpp)
-    target_include_directories(test-metal-graph-optimize PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src ${PROJECT_SOURCE_DIR}/ggml/src/ggml-metal)
-    target_link_libraries(test-metal-graph-optimize PRIVATE ggml-metal)
 endif()
 
 # TODO: make this test (and others) not link `libllama` as it is not needed [TAG_TESTS_LLAMA_LINK]
@@ -367,14 +342,12 @@ endif()
 
 llama_build_and_test(test-moe-cache-fit.cpp)
 
-llama_build_and_test(test-tiled-mulmat.cpp)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp       LABEL "model")
 llama_build_and_test(test-backend-sampler.cpp   LABEL "model")
 
 # Test for state restore with fragmented KV cache
 # Requires a model, uses same args pattern as test-thread-safety
-# TODO: run on all dummy models
 llama_build_and_test(test-state-restore-fragmented.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-state-restore-fragmented PROPERTIES FIXTURES_REQUIRED test-download-model)
 
@@ -382,7 +355,7 @@ if (APPLE)
     llama_build(test-rset-release.cpp)
 endif()
 
-if (NOT GGML_BACKEND_DL AND GGML_CPU)
+if (NOT GGML_BACKEND_DL)
     # these tests use the backends directly and cannot be built with dynamic loading
     llama_build_and_test(test-barrier.cpp)
     llama_build_and_test(test-quantize-fns.cpp)

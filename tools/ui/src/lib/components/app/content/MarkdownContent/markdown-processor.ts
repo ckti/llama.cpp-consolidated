@@ -11,7 +11,6 @@ import { rehypeEnhanceCodeBlocks } from './plugins/rehype/enhance-code-blocks';
 import { rehypeEnhanceLinks } from './plugins/rehype/enhance-links';
 import { rehypeEnhanceMermaidBlocks } from './plugins/rehype/enhance-mermaid-blocks';
 import { rehypeEnhanceSvgBlocks } from './plugins/rehype/enhance-svg-blocks';
-import { rehypeEnhanceTables } from './plugins/rehype/enhance-tables';
 import { rehypeFileBadge } from './plugins/rehype/file-badge';
 import { rehypeMermaidPre } from './plugins/rehype/mermaid-pre';
 import { rehypeRtlSupport } from './plugins/rehype/rehype-rtl-support';
@@ -74,7 +73,6 @@ function buildPipeline({
 			languages: lowlightAll
 		}) // Add syntax highlighting
 		.use(rehypeRestoreTableHtml) // Restore limited HTML (e.g. <br>, <ul>) inside Markdown tables
-		.use(rehypeEnhanceTables) // Wrap tables in a horizontal scroll container
 		.use(rehypeEnhanceLinks) // Add target="_blank" to links
 		.use(rehypeFileBadge) // Render file:// anchors as inline badge chips
 		.use(rehypeMermaidPre) // Convert mermaid blocks to <pre class="mermaid">

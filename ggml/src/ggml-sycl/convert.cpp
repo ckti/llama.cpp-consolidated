@@ -722,44 +722,10 @@ static void dequantize_row_turbo4_0_sycl(const void * vx, dst_t * y, const int64
         [=](sycl::nd_item<3> item) { dequantize_block_turbo4_0_kernel(vx, y, k, item); });
 }
 
-template <typename Block, int qk>
-static void dequantize_turbo_nc_sycl(
-        const void * vx, sycl::half * y,
-        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
-        const int64_t s01, const int64_t s02, const int64_t s03, dpct::queue_ptr queue) {
-    queue->parallel_for(sycl::range<3>(ne02 * ne03, ne01, ne00), [=](sycl::item<3> item) {
-        const int64_t i00 = item.get_id(2);
-        const int64_t i01 = item.get_id(1);
-        const int64_t i02 = item.get_id(0) % ne02;
-        const int64_t i03 = item.get_id(0) / ne02;
-
-        const int64_t ib = i03 * s03 + i02 * s02 + i01 * s01 + i00 / qk;
-        const int j = i00 % qk;
-        const auto * block = static_cast<const Block *>(vx) + ib;
-        const float norm = static_cast<float>(block->norm);
-
-        float value;
-        if constexpr (std::is_same_v<Block, block_turbo2_0>) {
-            value = turbo2_dequant_element(block, j, norm);
-        } else if constexpr (std::is_same_v<Block, block_turbo3_0>) {
-            value = turbo3_dequant_element(block, j, norm);
-        } else {
-            value = turbo4_dequant_element(block, j, norm);
-        }
-
-        const int64_t iy = ((i03 * ne02 + i02) * ne01 + i01) * ne00 + i00;
-        y[iy] = static_cast<sycl::half>(value);
-    });
-}
-
 to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
     switch (type) {
         case GGML_TYPE_Q1_0:
             return dequantize_block_sycl<QK1_0, QR1_0, dequantize_q1_0>;
-        case GGML_TYPE_PTQ1_0:
-            return dequantize_block_sycl<QK_PTQ1_0, QR_PTQ1_0, dequantize_ptq1_0>;
-        case GGML_TYPE_PQ2_0:
-            return dequantize_block_sycl<QK_PQ2_0, QR_PQ2_0, dequantize_pq2_0>;
         case GGML_TYPE_Q2_0:
             return dequantize_block_sycl<QK2_0, QR2_0, dequantize_q2_0>;
         case GGML_TYPE_Q4_0:
@@ -856,10 +822,6 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
     switch (type) {
         case GGML_TYPE_Q1_0:
             return dequantize_block_sycl<QK1_0, QR1_0, dequantize_q1_0>;
-        case GGML_TYPE_PTQ1_0:
-            return dequantize_block_sycl<QK_PTQ1_0, QR_PTQ1_0, dequantize_ptq1_0>;
-        case GGML_TYPE_PQ2_0:
-            return dequantize_block_sycl<QK_PQ2_0, QR_PQ2_0, dequantize_pq2_0>;
         case GGML_TYPE_Q2_0:
             return dequantize_block_sycl<QK2_0, QR2_0, dequantize_q2_0>;
         case GGML_TYPE_Q4_0:
@@ -980,10 +942,6 @@ to_fp16_nc_sycl_t ggml_get_to_fp16_nc_sycl(ggml_type type) {
 #endif
         case GGML_TYPE_Q1_0:
             return dequantize_block_nc_sycl<QK1_0, QR1_0, dequantize_q1_0>;
-        case GGML_TYPE_PTQ1_0:
-            return dequantize_block_nc_sycl<QK_PTQ1_0, QR_PTQ1_0, dequantize_ptq1_0>;
-        case GGML_TYPE_PQ2_0:
-            return dequantize_block_nc_sycl<QK_PQ2_0, QR_PQ2_0, dequantize_pq2_0>;
         case GGML_TYPE_Q4_0:
             return dequantize_block_nc_sycl<QK4_0, QR4_0, dequantize_q4_0>;
         case GGML_TYPE_Q4_1:
@@ -994,14 +952,7 @@ to_fp16_nc_sycl_t ggml_get_to_fp16_nc_sycl(ggml_type type) {
             return dequantize_block_nc_sycl<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_nc_sycl<QK8_0, QR8_0, dequantize_q8_0>;
-        case GGML_TYPE_TURBO2_0:
-            return dequantize_turbo_nc_sycl<block_turbo2_0, QK_TURBO2>;
-        case GGML_TYPE_TURBO3_0:
-            return dequantize_turbo_nc_sycl<block_turbo3_0, QK_TURBO3>;
-        case GGML_TYPE_TURBO4_0:
-            return dequantize_turbo_nc_sycl<block_turbo4_0, QK_TURBO4>;
         default:
-            GGML_ABORT("fatal error: unsupported data type=%s\n", ggml_type_name(type));
             return nullptr;
     }
 }

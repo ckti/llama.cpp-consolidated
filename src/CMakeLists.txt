@@ -27,8 +27,6 @@ set(LLAMA_CORE_SOURCES
     llama-kv-cache-dsa-iswa.cpp
     llama-kv-cache-msa.cpp
     llama-kv-cache-dsv4.cpp
-    llama-kv-stream-config.cpp
-    llama-kv-stream-plan.cpp
     llama-memory.cpp
     llama-memory-hybrid.cpp
     llama-memory-hybrid-iswa.cpp
@@ -69,6 +67,7 @@ configure_file(llama-version.h.in ${CMAKE_CURRENT_BINARY_DIR}/llama-version.h @O
 target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(llama PUBLIC ../include)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+target_precompile_headers (llama PRIVATE models/models.h)
 
 target_link_libraries(llama PUBLIC ggml)
 

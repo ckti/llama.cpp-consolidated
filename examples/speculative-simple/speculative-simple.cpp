@@ -240,7 +240,7 @@ int main(int argc, char ** argv) {
         LOG_INF("draft-dspark: target tap capture engaged on %zu layers\n", capture_layers.size());
     }
 
-    common_batch batch_tgt(ctx_tgt);
+    llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
 
     // eval the prompt
     if (spec_capture) {
@@ -326,24 +326,6 @@ int main(int argc, char ** argv) {
 
                 llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), seq_id, ckpt.pos_max + 1, -1);
             }
-
-            // save a checkpoint of the target context before evaluating the draft
-            // this allows us to restore the state if partial draft acceptance occurs
-            if (!draft.empty()) {
-                use_ckpt_tgt = seq_rm_tgt == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
-                              (seq_rm_tgt == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_tgt));
-                const bool ckpt_dft_rs = seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_dft);
-                use_ckpt_dft = seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || ckpt_dft_rs;
-
-                if (use_ckpt_tgt) {
-                    ckpt.update_tgt(ctx_tgt, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                }
-
-                // a FULL draft context was already checkpointed before drafting; only the RS overflow case needs one here
-                if (ckpt_dft_rs) {
-                    ckpt.update_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                }
-            }
         } else {
             // we have a previous (partial) draft to reuse from checkpoint restoration
             if (use_ckpt_tgt) {
@@ -352,15 +334,16 @@ int main(int argc, char ** argv) {
         }
 
         // always have a token to evaluate from before - id_last
-        batch_tgt.clear();
-        batch_tgt.add(id_last, n_past++, seq_id, true);
+        common_batch_clear(batch_tgt);
+        common_batch_add  (batch_tgt, id_last, n_past++, { seq_id }, true);
 
         // evaluate the target model on [id_last, draft0, draft1, ..., draftN-1]
         {
             for (size_t i = 0; i < draft.size(); ++i) {
-                batch_tgt.add(draft[i], n_past + i, seq_id, true);
+                common_batch_add(batch_tgt, draft[i], n_past + i, { seq_id }, true);
             }
 
+            //LOG_DBG("target batch: %s\n", string_from(ctx_tgt, batch_tgt).c_str());
 
             llama_decode(ctx_tgt, batch_tgt);
 
@@ -526,6 +509,7 @@ int main(int argc, char ** argv) {
     LOG_INF("target:\n\n");
     common_perf_print(ctx_tgt, smpl.get());
 
+    llama_batch_free(batch_tgt);
 
     common_speculative_free(spec);
 

@@ -23,10 +23,6 @@ on:
       'ggml/src/ggml-webgpu/**'
     ]
 
-cache-mode: none
-permissions:
-  contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
   cancel-in-progress: true
@@ -73,7 +69,7 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.24
         with:
-          restore: false
+          key: webgpu-macos-latest
           save: false
 
       - name: Dawn Dependency
@@ -134,7 +130,7 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.24
         with:
-          restore: false
+          key: webgpu-ubuntu-24.04
           save: false
 
       - name: Dependencies
