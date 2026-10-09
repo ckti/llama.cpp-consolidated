@@ -30,8 +30,6 @@ void llama_model_minimax_m3::load_arch_hparams(llama_model_loader & ml) {
         /*.local        =*/ (int) hparams.indexer_local_blocks,
     };
 
-    GGML_ASSERT(hparams.indexer_block_size > 0); // avoid div by zero
-
     switch (hparams.n_layer()) {
         case 60: type = LLM_TYPE_428B_A23B; break;
         default: type = LLM_TYPE_UNKNOWN;

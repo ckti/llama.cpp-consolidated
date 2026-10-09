@@ -13,9 +13,7 @@ on:
       '**/*.hpp',
       '**/*.c',
       '**/*.cpp',
-      '**/*.wgsl',
-      '**/*.tmpl',
-      'ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py'
+      '**/*.wgsl'
     ]
 
   pull_request:

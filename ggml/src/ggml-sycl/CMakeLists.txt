@@ -168,8 +168,24 @@ if (GGML_SYCL_F16)
     add_compile_definitions(GGML_SYCL_F16)
 endif()
 
+option(GGML_SYCL_SCALAR_MMQ "Force scalar MMQ tile sizes (for B70 without XMX kernels)" OFF)
+if (GGML_SYCL_SCALAR_MMQ)
+    add_compile_definitions(GGML_SYCL_SCALAR_MMQ)
+endif()
+
+option(GGML_SYCL_TURBO_QUANT "Enable dispatch to TurboQuant KV cache FA kernels" ON)
+if (GGML_SYCL_TURBO_QUANT)
+    add_compile_definitions(GGML_SYCL_TURBO_QUANT)
+endif()
+
+option(GGML_SYCL_SG32 "Use sub-group size 32 on Intel GPU (experimental)" OFF)
+
 if (GGML_SYCL_TARGET STREQUAL "INTEL")
-    add_compile_definitions(GGML_SYCL_WARP_SIZE=16)
+    if (GGML_SYCL_SG32)
+        add_compile_definitions(GGML_SYCL_WARP_SIZE=32)
+    else()
+        add_compile_definitions(GGML_SYCL_WARP_SIZE=16)
+    endif()
     if (NOT GGML_SYCL_DEVICE_ARCH)
         target_link_options(ggml-sycl PRIVATE -Xs -ze-intel-greater-than-4GB-buffer-required)
     else()
@@ -244,4 +260,22 @@ if (GGML_SYCL_DEVICE_ARCH)
     endforeach()
     message(STATUS "GGML_SYCL_DEVICE_ARCH: XMX dequant-GEMM sub-group size ${_ggml_sycl_xmx_sg} (0 = off)")
     target_compile_definitions(ggml-sycl PRIVATE GGML_SYCL_XMX_AOT_SG=${_ggml_sycl_xmx_sg})
+
+    # The PQ2_0/PTQ1_0 XMX kernels (pq2_xmx.cpp) need 16-wide DPAS and 2D block loads, and AOT compiles them for
+    # every listed device, so they are only built when all of them are Xe-HPC, Xe2 or later. Otherwise those
+    # types keep the existing paths.
+    string(REPLACE "," ";" _ggml_sycl_aot_devices "${GGML_SYCL_DEVICE_ARCH}")
+    set(_ggml_sycl_pq2_xmx ON)
+    foreach (_ggml_sycl_dev IN LISTS _ggml_sycl_aot_devices)
+        string(STRIP "${_ggml_sycl_dev}" _ggml_sycl_dev)
+        string(TOLOWER "${_ggml_sycl_dev}" _ggml_sycl_dev)
+        # the -vg parts of Xe-HPC have no XMX
+        if (NOT _ggml_sycl_dev MATCHES "^(pvc|bmg|lnl|ptl|wcl|nvl|cri|xe-hpc|xe2|xe3)" OR _ggml_sycl_dev MATCHES "-vg")
+            set(_ggml_sycl_pq2_xmx OFF)
+        endif()
+    endforeach()
+    if (NOT _ggml_sycl_pq2_xmx)
+        message(STATUS "GGML_SYCL_DEVICE_ARCH includes a device without 16-wide DPAS, not building the PQ2_0/PTQ1_0 XMX path")
+        set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/pq2_xmx.cpp APPEND PROPERTY COMPILE_DEFINITIONS GGML_SYCL_NO_PQ2_XMX)
+    endif()
 endif()

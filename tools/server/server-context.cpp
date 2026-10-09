@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cinttypes>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <filesystem>
 #include <random>
@@ -45,8 +46,12 @@ static common_speculative_output_limits server_output_limits(const common_params
         return { params.n_batch, 1 };
     }
 
-    auto result = common_speculative_get_output_limits(
-            params.n_batch, params.n_parallel, common_speculative_n_max(&params.speculative));
+    uint32_t n_max = (uint32_t) common_speculative_n_max(&params.speculative);
+    if (params.speculative.draft.dflash || params.speculative.draft.eagle3) {
+        n_max = std::max(n_max, (uint32_t) std::max(0, params.speculative.draft.n_max));
+    }
+
+    auto result = common_speculative_get_output_limits(params.n_batch, params.n_parallel, n_max);
 
     result.total   = std::max<int32_t>(1, result.total);
     result.per_seq = std::max<int32_t>(1, result.per_seq);
@@ -256,6 +261,7 @@ struct server_slot {
 
     // speculative decoding
     common_speculative * spec;
+    int32_t spec_depth_max = 0; // no drafting once the sequence is longer than this (0 = always draft)
 
     llama_tokens spec_draft;
 
@@ -305,13 +311,26 @@ struct server_slot {
 
     server_prompt prompt;
 
+    // Set once a context reports that it cannot serialize its KV cache, so the failure is
+    // logged one time instead of on every request.
+    mutable bool state_save_unsupported = false;
+
     bool prompt_save(server_prompt_cache & prompt_cache) const {
-        if (prompt.tokens.size() == 0) {
+        if (prompt.tokens.size() == 0 || state_save_unsupported) {
             return false;
         }
 
         const size_t cur_size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
         const size_t cur_size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+
+        // A context that cannot serialize its KV cache (block KV streaming, for one) reports
+        // size zero. Saving an empty entry would spend a cache slot on something prompt_load
+        // can never restore, and would repeat the failure on every request.
+        if (cur_size_tgt == 0) {
+            SRV_WRN("%s", "prompt cache disabled: this context cannot save KV cache state\n");
+            state_save_unsupported = true;
+            return false;
+        }
 
         const size_t cur_size = cur_size_tgt + cur_size_dft;
 
@@ -402,6 +421,7 @@ struct server_slot {
 
         // note: callback_on_reset() must have run before this, see release()
         stats = {};
+        stats.speculative = can_speculate();
         n_accepted_per_pos.clear();
 
         n_predict_max = -1;
@@ -518,6 +538,12 @@ struct server_slot {
         GGML_ASSERT(task);
 
         if (!can_speculate()) {
+            return 0;
+        }
+
+        // deep in the context the draft passes and the multi-column verify cost more than the
+        // accepted tokens save (see --spec-draft-depth-max); decode one token per step from here
+        if (spec_depth_max > 0 && prompt.n_tokens() > spec_depth_max) {
             return 0;
         }
 
@@ -1363,8 +1389,9 @@ private:
                 std::min(n_ctx_seq, params_base.kv_unified_per_slot) : n_ctx_seq;
 
             if (n_ctx_capped > n_ctx_train) {
-                SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - capping\n",
-                        n_ctx_capped, n_ctx_train);
+                SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - %s\n",
+                        n_ctx_capped, n_ctx_train,
+                        has_explicit_rope_scaling() ? "using explicit RoPE scaling" : "capping");
             }
         }
 
@@ -1404,9 +1431,35 @@ private:
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
+        std::vector<common_speculative_type> spec_types_requested;
+        std::copy_if(params_base.speculative.types.begin(), params_base.speculative.types.end(),
+                std::back_inserter(spec_types_requested),
+                [](common_speculative_type t) { return t != COMMON_SPECULATIVE_TYPE_NONE; });
+
         if (spec) {
-            SRV_TRC("%s", "speculative decoding context initialized\n");
+            const auto spec_types_active = common_speculative_get_types(spec.get());
+            SRV_INF("speculative decoding enabled: %s\n",
+                    common_speculative_type_name_str(spec_types_active).c_str());
+
+            std::vector<common_speculative_type> spec_types_skipped;
+            for (const auto t : spec_types_requested) {
+                if (std::find(spec_types_active.begin(), spec_types_active.end(), t) == spec_types_active.end()) {
+                    spec_types_skipped.push_back(t);
+                }
+            }
+            if (!spec_types_skipped.empty()) {
+                SRV_WRN("speculative types requested but not initialized (e.g. no draft model): %s\n",
+                        common_speculative_type_name_str(spec_types_skipped).c_str());
+            }
         } else {
+            if (!spec_types_requested.empty()) {
+                SRV_WRN("speculative decoding (%s) was requested but is disabled: %s\n",
+                        common_speculative_type_name_str(spec_types_requested).c_str(),
+                        ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_NO
+                            ? "the target context cannot remove tokens from a sequence"
+                            : "no speculative implementation could be initialized");
+            }
+
             spec_init.reset();
             ctx_dft   = nullptr;
             model_dft = nullptr;
@@ -1425,7 +1478,10 @@ private:
             slot.ctx_dft = ctx_dft;
             slot.mem.init(ctx_tgt, ctx_dft);
             slot.spec    = spec.get();
+            slot.spec_depth_max = params_base.speculative.draft.n_depth_max;
             slot.n_ctx   = n_ctx_slot();
+
+            slot.stats.speculative = slot.can_speculate();
 
             slot.mctx                   = mctx;
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
@@ -1482,14 +1538,25 @@ private:
         }
 
         if (params_base.cache_ram_mib != 0) {
-            if (params_base.cache_ram_mib < 0) {
-                SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
+            int32_t cache_ram_mib = params_base.cache_ram_mib;
+            if (cache_ram_mib < 0) {
+                // "no limit" must still be bounded by the machine: every cached prompt is a full copy of a
+                // sequence's KV state in host memory (14 GiB for a 220k-token f16 cache on a 27B model),
+                // and an unbounded cache swaps the box to death long before it helps anyone.
+                // Take half of what the host has free when the server starts.
+                size_t free_host = 0, total_host = 0;
+                if (auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
+                    ggml_backend_dev_memory(cpu_dev, &free_host, &total_host);
+                }
+                cache_ram_mib = free_host > 0 ? (int32_t) std::min<size_t>(free_host / 2 / (1024*1024), INT32_MAX) : 8192;
+                SRV_INF("prompt cache is enabled with no explicit limit, bounding it to %d MiB (half of the %.1f GiB of free host memory)\n",
+                        cache_ram_mib, free_host / (1024.0*1024.0*1024.0));
             } else {
-                SRV_TRC("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
+                SRV_INF("prompt cache is enabled, size limit: %d MiB\n", cache_ram_mib);
             }
             SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
 
-            prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
+            prompt_cache = std::make_unique<server_prompt_cache>(cache_ram_mib, n_ctx);
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
@@ -2519,7 +2586,8 @@ private:
 
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
-        const int id_task = slot.task->id;
+        // Slot restore can synthesize a checkpoint without an active inference task.
+        const int id_task = slot.task ? slot.task->id : -1;
 
         // evict checkpoints within min-step of a previous checkpoint, unless they were
         // created by the current task
@@ -4226,7 +4294,22 @@ private:
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
         //       for now, always re-evaluate for simplicity
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
-        if (spec) {
+        // past --spec-draft-depth-max a slot does not draft, so its draft context has no use for
+        // these rows: skip the hook (and the draft-model decode it implies) when every token of this
+        // view sits beyond the cutoff. Positions, not the slot's token count, decide it, so the early
+        // ubatches of a long prompt still reach the draft context and stay reusable as a prefix.
+        bool spec_process = spec != nullptr;
+        if (spec_process && params_base.speculative.draft.n_depth_max > 0) {
+            spec_process = false;
+            for (const auto & token : batch.view.tokens) {
+                if (token.pos[0] <= params_base.speculative.draft.n_depth_max) {
+                    spec_process = true;
+                    break;
+                }
+            }
+        }
+
+        if (spec_process) {
             bool ok = true;
             queue_tasks.yield_to_queue([&]() {
                 ok = common_speculative_process(spec.get(), batch.view);
@@ -4531,6 +4614,11 @@ private:
     }
 
     // context size of a single slot, capped by --kv-unified-per-slot and by the training context of the model
+    bool has_explicit_rope_scaling() const {
+        return params_base.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_LINEAR ||
+               params_base.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN;
+    }
+
     int n_ctx_slot() const {
         int res = llama_n_ctx_seq(ctx_tgt);
 
@@ -4538,7 +4626,7 @@ private:
             res = std::min(res, params_base.kv_unified_per_slot);
         }
 
-        return std::min(res, llama_model_n_ctx_train(model_tgt));
+        return has_explicit_rope_scaling() ? res : std::min(res, llama_model_n_ctx_train(model_tgt));
     }
 
     server_response_reader get_response_reader() {

@@ -146,7 +146,9 @@ common_peg_parser analyze_reasoning::build_parser(parser_build_context & ctx) co
         if (!end.empty()) {
             if (!start.empty()) {
                 // Standard tag-based: optional(<think>reasoning</think>)
-                return p.optional(p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
+                // Allow optional whitespace before the start tag — some models
+                // emit a newline before reasoning begins.
+                return p.optional(p.space() + p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
             }
             // Delimiter-style (empty start)
             return p.optional(p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
@@ -374,7 +376,7 @@ common_peg_parser analyze_tools::build_tool_parser_tag_tagged(parser_build_conte
         foreach_parameter(func, [&](size_t param_index, const common_chat_schema_property & param, const common_chat_schema_document_ptr & doc) {
             auto arg =
                 p.tool_arg(p.tool_arg_open(arguments.name_prefix + p.tool_arg_name(p.literal(param.name)) +
-                                           arguments.name_suffix) +
+                           arguments.name_suffix) +
                            arguments.value_prefix +
                            (param.schema->may_be_string() ?
                                 p.ac(p.tool_arg_string_value(until_suffix) +

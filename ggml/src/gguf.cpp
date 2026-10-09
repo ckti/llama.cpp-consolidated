@@ -229,6 +229,63 @@ struct gguf_context {
     void * data = nullptr;
 };
 
+// fork: legacy Prism files used type 42 for group-128 Q2_0. Only remap when
+// every tensor offset agrees with that layout and the native layout has failed.
+static bool gguf_try_legacy_q2_layout(gguf_context * ctx) {
+    size_t size = 0;
+    size_t n_q2 = 0;
+    for (const auto & info : ctx->info) {
+        if (info.offset != size) {
+            return false;
+        }
+
+        size_t nbytes;
+        if (info.t.type == GGML_TYPE_Q2_0) {
+            const int64_t blck_size = ggml_blck_size(GGML_TYPE_PQ2_0);
+            if (info.t.ne[0] % blck_size != 0) {
+                return false;
+            }
+            const uint64_t nblocks = ggml_nelements(&info.t) / blck_size;
+            const size_t type_size = ggml_type_size(GGML_TYPE_PQ2_0);
+            if (nblocks > SIZE_MAX / type_size) {
+                return false;
+            }
+            nbytes = nblocks * type_size;
+            ++n_q2;
+        } else {
+            nbytes = ggml_nbytes(&info.t);
+        }
+
+        if (nbytes > SIZE_MAX - (ctx->alignment - 1)) {
+            return false;
+        }
+        const size_t padded_size = GGML_PAD(nbytes, ctx->alignment);
+        if (size > SIZE_MAX - padded_size) {
+            return false;
+        }
+        size += padded_size;
+    }
+    if (n_q2 == 0) {
+        return false;
+    }
+
+    for (auto & info : ctx->info) {
+        if (info.t.type != GGML_TYPE_Q2_0) {
+            continue;
+        }
+        info.t.type = GGML_TYPE_PQ2_0;
+        info.t.nb[0] = ggml_type_size(info.t.type);
+        info.t.nb[1] = ggml_row_size(info.t.type, info.t.ne[0]);
+        for (int j = 2; j < GGML_MAX_DIMS; ++j) {
+            info.t.nb[j] = info.t.nb[j - 1] * info.t.ne[j - 1];
+        }
+    }
+    ctx->size = size;
+    GGML_LOG_WARN("%s: detected legacy Prism group-128 Q2_0 layout; treating %zu tensors as PQ2_0 (file unchanged)\n",
+        __func__, n_q2);
+    return true;
+}
+
 struct gguf_reader {
     gguf_reader(
             gguf_reader_callback_t callback,
@@ -793,6 +850,9 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         for (size_t i = 0; i < ctx->info.size(); ++i) {
             const gguf_tensor_info & ti = ctx->info[i];
             if (ti.offset != ctx->size) {
+                if (gguf_try_legacy_q2_layout(ctx)) {
+                    break;
+                }
                 GGML_LOG_ERROR("%s: tensor '%s' has offset %" PRIu64 ", expected %zu\n",
                     __func__, ti.t.name, ti.offset, ctx->size);
                 GGML_LOG_ERROR("%s: failed to read tensor data\n", __func__);

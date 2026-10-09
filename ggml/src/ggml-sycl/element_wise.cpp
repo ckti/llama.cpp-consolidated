@@ -491,7 +491,6 @@ static void add_unary_mul_sycl(const float * a, const float * bias, const float 
         add_unary_mul_bcast_kernel(a, bias, scale, dst, k, ne0_fd, item_ct1, op);
     });
 }
-
 namespace ggml_sycl_detail {
 static void acc_f32_sycl(const char *x, const char *y, float *dst,
                          const int64_t n_elements,
@@ -1121,7 +1120,6 @@ void ggml_sycl_op_add_unary_mul_fused(ggml_backend_sycl_context & ctx, ggml_tens
 
     dispatch_fused_unary_op(ggml_get_unary_op(unary_node), dispatch_op);
 }
-
 __dpct_inline__ float ggml_sycl_op_swiglu_oai_single(float x, float g, float alpha = 1.702f, float limit = 7.0f) {
     x = sycl::fmin(x, limit);
     g = sycl::fmax(sycl::fmin(g, limit), -limit);

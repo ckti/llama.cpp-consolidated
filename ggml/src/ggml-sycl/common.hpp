@@ -153,7 +153,7 @@ extern int g_ggml_sycl_memtrace_step;
 
 // define for XMX in Intel GPU
 // TODO: currently, it's not used for XMX really.
-#if !defined(GGML_SYCL_FORCE_MMQ)
+#if !defined(GGML_SYCL_FORCE_MMQ) && !defined(GGML_SYCL_SCALAR_MMQ)
     #define SYCL_USE_XMX
 #endif
 
@@ -289,6 +289,7 @@ struct sycl_device_info {
     sycl_hw_info hw_info;
     optimize_feature opt_feature;
     bool    usm_system_support; // support for USM system allocations
+    int     dpas_exec_size;     // XMX DPAS width (8 or 16) for int8, 0 without XMX
 };
 
 

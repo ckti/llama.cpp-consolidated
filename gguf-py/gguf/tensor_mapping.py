@@ -98,6 +98,7 @@ class TensorNameMap:
         ),
         # Output norm
         MODEL_TENSOR.OUTPUT_NORM: (
+            "model.final_norm",         # dfly
             "gpt_neox.final_layer_norm",               # gptneox
             "transformer.ln_f",                        # gpt2 gpt-j falcon jais exaone
             "model.norm",                              # llama-hf baichuan internlm2 olmoe olmo2 phimoe plamo2
@@ -1489,8 +1490,37 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.FC: (
-            "model.fc",   # dflash
-            "encoder.fc", # dflash (transformers MuseGlimmerAssistant)
+            "model.fc",           # dflash
+            "encoder.fc",         # dflash (transformers MuseGlimmerAssistant)
+            "model.context_proj", # dfly (the shared base context projection)
+        ),
+
+        MODEL_TENSOR.DFLY_LAYER_FUSION: (
+            "model.layer_fusion_weights", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_CTX_NORM: (
+            "model.context_norm", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_HC_HIDDEN_NORM: (
+            "model.hidden_correction.hidden_norm", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_HC_EMBED_NORM: (
+            "model.hidden_correction.embed_norm", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_HC_GATE: (
+            "model.hidden_correction.gate_proj", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_HC_UP: (
+            "model.hidden_correction.up_proj", # dfly
+        ),
+
+        MODEL_TENSOR.DFLY_HC_DOWN: (
+            "model.hidden_correction.down_proj", # dfly
         ),
 
         MODEL_TENSOR.DSPARK_MARKOV_W1: (
@@ -2927,15 +2957,15 @@ class TensorNameMap:
             MODEL_TENSOR.HC_HEAD_UP: (
                 "model.hyper_connection_mixer.input_mix_weight_up",
             ),
-            # the MTP block's own mixer, renamed to its layer by the converter
+            # the MTP head carries its own copy of the head mixer above
             MODEL_TENSOR.NEXTN_HC_HEAD_NORM: (
-                "model.layers.{bid}.nextn_hc_head.hc_norm",
+                "model.layers.{bid}.hyper_connection_mixer.hc_norm",
             ),
             MODEL_TENSOR.NEXTN_HC_HEAD_DOWN: (
-                "model.layers.{bid}.nextn_hc_head.input_mix_weight_down",
+                "model.layers.{bid}.hyper_connection_mixer.input_mix_weight_down",
             ),
             MODEL_TENSOR.NEXTN_HC_HEAD_UP: (
-                "model.layers.{bid}.nextn_hc_head.input_mix_weight_up",
+                "model.layers.{bid}.hyper_connection_mixer.input_mix_weight_up",
             ),
             MODEL_TENSOR.INDEXER_Q_NORM: (
                 "model.layers.{bid}.self_attn.indexer.q_layernorm",

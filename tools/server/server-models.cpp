@@ -42,9 +42,6 @@ extern char **environ;
 
 #define DEFAULT_STOP_TIMEOUT 10 // seconds
 
-#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
-#define CMD_CHILD_TO_ROUTER_STATE "cmd_child_to_router:state:" // followed by json string
-
 // note: SIGPIPE is ignored by the server
 static void request_child_exit(server_subproc & proc) {
     FILE * stdin_file = proc.sproc.stdin_file();
@@ -195,6 +192,15 @@ private:
         } else if (string_starts_with(line, CMD_CHILD_TO_ROUTER_STATE)) {
             LOG_DBG("[%5d] %s", c.port, line.c_str()); // prevent spamming the log
             models.handle_child_state(c.name, line);
+        } else if (string_starts_with(line, CMD_CHILD_TO_ROUTER_ERROR)) {
+            SRV_ERR("model name=%s loading error: %s", c.name.c_str(), line.c_str());
+            std::string err_msg = line.substr(strlen(CMD_CHILD_TO_ROUTER_ERROR));
+            while (!err_msg.empty() && (err_msg.back() == '\n' || err_msg.back() == '\r')) {
+                err_msg.pop_back();
+            }
+            models.update_status(c.name, {
+                SERVER_MODEL_STATUS_UNLOADED, 1, nullptr, nullptr, err_msg,
+            });
         } else {
             SRV_WRN("[%5d] unexpected output on the command pipe: %s", c.port, line.c_str());
         }
@@ -242,6 +248,10 @@ private:
                     SRV_WRN("force-killing model instance name=%s after timeout\n", it->name.c_str());
                     it->proc->terminate();
                     it->deadline = 0;
+                }
+                if (it->eof && it->proc->is_alive()) {
+                    SRV_WRN("model name=%s child still alive after log EOF, force-killing\n", it->name.c_str());
+                    it->proc->terminate();
                 }
                 if (it->eof && !it->proc->is_alive()) {
                     int exit_code = it->proc->join();
@@ -1354,6 +1364,11 @@ void server_models::update_status(const std::string & name, const update_status_
         if (!args.progress.is_null()) {
             meta.progress = args.progress;
         }
+        if (args.last_error.has_value()) {
+            meta.last_error = args.last_error.value();
+        } else if (args.status == SERVER_MODEL_STATUS_LOADING) {
+            meta.last_error.clear();
+        }
         // a model that comes up idle or goes down changes the slot count for queued requests
         sched->tick(lk);
     }
@@ -1370,6 +1385,9 @@ void server_models::update_status(const std::string & name, const update_status_
         }
         if (!args.progress.is_null()) {
             data["progress"] = args.progress;
+        }
+        if (args.last_error.has_value()) {
+            data["last_error"] = args.last_error.value();
         }
         // note: notify_sse doesn't acquire the lock, so no deadlock here
         notify_sse("status_change", name, data);
@@ -2108,6 +2126,12 @@ void server_models_routes::init_routes() {
             if (meta.is_failed()) {
                 status["exit_code"] = meta.exit_code;
                 status["failed"]    = true;
+                if (meta.is_signaled()) {
+                    status["exit_signal"] = meta.exit_signal();
+                }
+            }
+            if (!meta.last_error.empty()) {
+                status["last_error"] = meta.last_error;
             }
 
             json model_info = json {

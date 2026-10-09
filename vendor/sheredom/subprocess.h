@@ -307,10 +307,8 @@ subprocess_weak int subprocess_alive(struct subprocess_s *const process);
 #endif
 
 /* Whether subprocess_create_ex can honour process_cwd. glibc only gained
-   posix_spawn_file_actions_addchdir_np in 2.29, and macOS in 10.15; the SDKs
-   mark it unavailable on iOS, tvOS and watchOS, where the undefined version
-   macro folds to 0 and so answers correctly. Define this yourself to override
-   the detection, for instance on musl older than 1.1.24. */
+   posix_spawn_file_actions_addchdir_np in 2.29. Define this yourself to
+   override the detection, for instance on musl older than 1.1.24. */
 #if !defined(SUBPROCESS_HAVE_CWD)
 #if SUBPROCESS_SPAWN_VIA_FORK
 #define SUBPROCESS_HAVE_CWD 1
@@ -320,8 +318,6 @@ subprocess_weak int subprocess_alive(struct subprocess_s *const process);
 #else
 #define SUBPROCESS_HAVE_CWD 0
 #endif
-#elif defined(__APPLE__) && MAC_OS_X_VERSION_MIN_REQUIRED < 101500
-#define SUBPROCESS_HAVE_CWD 0
 #else
 #define SUBPROCESS_HAVE_CWD 1
 #endif
@@ -1945,6 +1941,11 @@ int subprocess_join(struct subprocess_s *const process,
 
     if (WIFEXITED(status)) {
       process->return_status = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        // Store negated signal number so callers can distinguish signal death
+        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
+        // normal error exit (positive exit code) and clean exit (exit code 0).
+        process->return_status = -WTERMSIG(status);
     } else {
       process->return_status = EXIT_FAILURE;
     }
@@ -2159,6 +2160,11 @@ int subprocess_alive(struct subprocess_s *const process) {
     if (!is_alive) {
       if (WIFEXITED(status)) {
         process->return_status = WEXITSTATUS(status);
+      } else if (WIFSIGNALED(status)) {
+        // Store negated signal number so callers can distinguish signal death
+        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
+        // normal error exit (positive exit code) and clean exit (exit code 0).
+        process->return_status = -WTERMSIG(status);
       } else {
         process->return_status = EXIT_FAILURE;
       }

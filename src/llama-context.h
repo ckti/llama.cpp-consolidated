@@ -76,6 +76,9 @@ struct llama_context {
 
     llama_memory_t get_memory() const;
 
+    enum ggml_type get_kv_type_k() const;
+    enum ggml_type get_kv_type_v() const;
+
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
@@ -92,6 +95,12 @@ struct llama_context {
     float * get_embeddings_nextn_ith(int32_t i);
 
     float * get_embeddings_layer_inp(uint32_t lid);
+    float * get_embeddings_capture();
+    float * get_embeddings_capture_ith(int32_t i);
+    uint32_t get_n_capture() const;
+    void set_capture_layers(const std::vector<int32_t> & layer_ids, bool masked = true);
+    void set_dspark_ctx(const float * feat, int64_t n_ctx_rows, int64_t n_embd_cap);
+    bool dspark_markov_resample(uint32_t n_rows, llama_token prev_token, llama_token * result);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -114,13 +123,16 @@ struct llama_context {
     void detach_threadpool();
 
     void set_n_threads(int32_t n_threads, int32_t n_threads_batch);
+    void set_decode_phase(enum llama_decode_phase phase);
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
+
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
+    void set_mtp_chain(bool value);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -295,10 +307,57 @@ private:
 
     llama_cparams cparams;
 
+    struct kv_stream_phase_arena_owner {
+        struct layout {
+            size_t kv_bytes = 0;
+            size_t compute_offset = 0;
+            size_t compute_bytes = 0;
+            uint32_t ring_slots = 0;
+            uint32_t resident_pages_per_layer = 0;
+            std::vector<size_t> backend_sizes;
+        };
+
+        void * arena = nullptr;
+        void (*free_fn)(void *) = nullptr;
+        bool (*set_compute_fn)(void *, size_t, size_t) = nullptr;
+        ggml_backend_buffer_type_t (*buffer_type_fn)(void *) = nullptr;
+        bool (*graph_reset_fn)(ggml_backend_t) = nullptr;
+        ggml_backend_dev_t device = nullptr;
+        ggml_backend_buffer_type_t buffer_type = nullptr;
+        size_t arena_bytes = 0;
+        size_t page_bytes = 0;
+        size_t conversion_bytes = 0;
+        uint32_t layer_count = 0;
+        uint32_t minimum_ring_slots = 8;
+        size_t backend_index = SIZE_MAX;
+        size_t max_nodes = 0;
+        size_t current_kv_bytes = 0;
+        size_t current_compute_offset = 0;
+        size_t current_compute_bytes = 0;
+        uint32_t current_ring_slots = 0;
+        bool decode = false;
+        bool configured = false;
+        layout prefill;
+        layout token_generation;
+
+        ~kv_stream_phase_arena_owner() {
+            if (arena != nullptr) {
+                free_fn(arena);
+            }
+        }
+    };
+
+    bool kv_stream_switch_phase(bool decode, uint32_t active_tokens);
+
+    // Declared before memory and scheduler so their arena leases are released first.
+    kv_stream_phase_arena_owner kv_stream_phase_arena;
+
     llama_adapter_cvec_ptr  cvec;
     llama_adapter_loras_ptr loras;
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
+
+    llama_dspark_ctx dspark_ctx;
 
     llama_memory_ptr memory;
     llama_moe_cache_ptr moe_cache;
@@ -318,6 +377,7 @@ private:
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
+    buffer_view<float> embd_capture = {nullptr, 0};
     std::vector<int32_t> embd_batch_idxs; // extracted index -> original batch index
 
     struct sampling_info {
@@ -398,9 +458,18 @@ private:
 
     // Separate arenas give batches with and without outputs distinct CUDA graph cache keys.
     std::array<llm_graph_result_ptr, 2> gf_res_prev;
+    ggml_backend_sched_ptr dspark_markov_sched;
     llm_graph_result_ptr gf_res_reserve;
-
     llm_graph_result * gf_res_prev_active = nullptr;
+
+    // the Hadamard transforms this context's graphs consult: the model's own,
+    // plus the target's when the model borrows its token embeddings or output
+    // head through ctx_other (those tensors keep the target's folding)
+    llama_hadamard_rotations hadamard_rotations;
+    llama_hadamard_rotations hadamard_inverses;
+
+    // one-time Hadamard transform-coverage check on the first built graph
+    bool hadamard_verified = false;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
@@ -412,6 +481,9 @@ private:
 
     // env: LLAMA_GRAPH_REUSE_DISABLE
     bool graph_reuse_disable = false;
+
+    enum llama_decode_phase decode_phase =
+        LLAMA_DECODE_PHASE_AUTOMATIC;
 
     // perf
     mutable int64_t t_start_us  = 0;

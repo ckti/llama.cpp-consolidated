@@ -43,6 +43,10 @@ jobs:
   ubuntu-24-openvino:
     runs-on: [self-hosted, Linux, Intel, OpenVINO]
 
+    concurrency:
+      group: openvino-gpu-${{ github.head_ref || github.ref }}
+      cancel-in-progress: false
+
     env:
       # Sync versions in build-openvino.yml, build-self-hosted.yml, release.yml, build-cache.yml, .devops/openvino.Dockerfile
       OPENVINO_VERSION_MAJOR: "2026.4.1"
@@ -80,7 +84,7 @@ jobs:
           cmake -B build/ReleaseOV -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_OPENVINO=ON
-          time cmake --build build/ReleaseOV --config Release --parallel
+          time cmake --build build/ReleaseOV --config Release -j $(nproc)
 
       - name: Test (CPU)
         id: cmake_test_cpu

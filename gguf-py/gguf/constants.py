@@ -133,6 +133,16 @@ class Keys:
         MOE_EVERY_N_LAYERS                = "{arch}.moe_every_n_layers"
         MOE_LATENT_SIZE                   = "{arch}.moe_latent_size"
         NEXTN_PREDICT_LAYERS              = "{arch}.nextn_predict_layers"
+        # dspark drafter (block-diffusion EAGLE-style speculative decoder)
+        DSPARK_BLOCK_SIZE                 = "{arch}.dspark.block_size"
+        DSPARK_MASK_TOKEN_ID              = "{arch}.dspark.mask_token_id"
+        DSPARK_TARGET_LAYERS              = "{arch}.dspark.target_layers"
+        DSPARK_MARKOV_RANK                = "{arch}.dspark.markov_rank"
+        DSPARK_CONFIDENCE_HEAD            = "{arch}.dspark.confidence_head"
+        DSPARK_CONFIDENCE_WITH_MARKOV     = "{arch}.dspark.confidence_head_with_markov"
+        DSPARK_LOG_SNR_CONDITIONING       = "{arch}.dspark.log_snr_conditioning"
+        DSPARK_MIN_LOG_SNR                = "{arch}.dspark.min_log_snr"
+        DSPARK_MAX_LOG_SNR                = "{arch}.dspark.max_log_snr"
         NUM_DEEPSTACK_LAYERS              = "{arch}.n_deepstack_layers"
         DEEPSTACK_MAPPING                 = "{arch}.deepstack_mapping"
         POOLING_TYPE                      = "{arch}.pooling_type"
@@ -164,6 +174,7 @@ class Keys:
         DENSE_FEAT_IN_SIZE                = "{arch}.{dense}_feat_in"
         DENSE_FEAT_OUT_SIZE               = "{arch}.{dense}_feat_out"
         TARGET_LAYERS                     = "{arch}.target_layers"
+        DECODER_ARCH                     = "{arch}.decoder_arch"
         TARGET_HIDDEN_SIZE                = "{arch}.target_hidden_size"
         BLOCK_SIZE                        = "{arch}.block_size"
         CONV_KERNEL_SIZE                  = "{arch}.conv_kernel_size"
@@ -543,7 +554,7 @@ class MODEL_ARCH(IntEnum):
     QWEN3VLMOE       = auto()
     QWEN35           = auto()
     QWEN35MOE        = auto()
-    CLEF             = auto()
+    DSPARK           = auto()
     QWEN4EXP         = auto()
     PHI2             = auto()
     PHI3             = auto()
@@ -840,13 +851,13 @@ class MODEL_TENSOR(IntEnum):
     HC_ATTN_FN           = auto()
     HC_ATTN_BASE         = auto()
     HC_ATTN_SCALE        = auto()
-    HC_FFN_FN            = auto()
-    HC_FFN_BASE          = auto()
-    HC_FFN_SCALE         = auto()
     HC_ATTN_NORM         = auto() # qwen4exp
     HC_ATTN_DOWN         = auto() # qwen4exp
     HC_ATTN_UP           = auto() # qwen4exp
     HC_ATTN_INJECT       = auto() # qwen4exp
+    HC_FFN_FN            = auto()
+    HC_FFN_BASE          = auto()
+    HC_FFN_SCALE         = auto()
     HC_FFN_NORM          = auto() # qwen4exp
     HC_FFN_DOWN          = auto() # qwen4exp
     HC_FFN_UP            = auto() # qwen4exp
@@ -891,6 +902,7 @@ class MODEL_TENSOR(IntEnum):
     ENC_FFN_GATE         = auto()
     ENC_FFN_DOWN         = auto()
     ENC_FFN_UP           = auto()
+    ENC_AUX_NORM          = auto()
     ENC_OUTPUT_NORM      = auto()
     CLS                  = auto() # classifier
     CLS_OUT              = auto() # classifier output projection
@@ -1237,6 +1249,8 @@ class MODEL_TENSOR(IntEnum):
     NEXTN_HNORM            = auto()
     NEXTN_SHARED_HEAD_HEAD = auto()
     NEXTN_SHARED_HEAD_NORM = auto()
+    # qwen4exp: the MTP head's own hyper-connection mixer, which stands in for the
+    # output norm the trunk does not have
     NEXTN_HC_HEAD_NORM     = auto()
     NEXTN_HC_HEAD_DOWN     = auto()
     NEXTN_HC_HEAD_UP       = auto()
@@ -1244,9 +1258,22 @@ class MODEL_TENSOR(IntEnum):
     FC                     = auto()  # feature fusion layer
     D2T                    = auto()  # draft to target vocabulary mapping
     # dspark
+    # dspark drafter
+    DSPARK_FC              = auto()
+    DSPARK_HIDDEN_NORM     = auto()
+    DSPARK_MARKOV_HEAD_A   = auto()
+    DSPARK_MARKOV_HEAD_B   = auto()
+    DSPARK_CONFIDENCE_HEAD = auto()
     DSPARK_MARKOV_W1       = auto()  # markov head: prev-token embed
     DSPARK_MARKOV_W2       = auto()  # markov head: bias projection
     DSPARK_CONF_PROJ       = auto()  # confidence head
+    DSPARK_FC                = auto()
+    DSPARK_HIDDEN_NORM       = auto()
+    DSPARK_MARKOV_HEAD_A     = auto()
+    DSPARK_MARKOV_HEAD_B     = auto()
+    DSPARK_CONFIDENCE_HEAD   = auto()
+    DSPARK_LOG_SNR_FC1       = auto()
+    DSPARK_LOG_SNR_FC2       = auto()
     DFLASH_ATTN_CONV_BASE  = auto()
     DFLASH_ATTN_CONV_PROJ  = auto()
     DFLASH_FFN_CONV_BASE   = auto()
@@ -1326,7 +1353,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.QWEN3VLMOE:       "qwen3vlmoe",
     MODEL_ARCH.QWEN35:           "qwen35",
     MODEL_ARCH.QWEN35MOE:        "qwen35moe",
-    MODEL_ARCH.CLEF:             "clef",
+    MODEL_ARCH.DSPARK:           "dspark",
     MODEL_ARCH.QWEN4EXP:         "qwen4exp",
     MODEL_ARCH.PHI2:             "phi2",
     MODEL_ARCH.PHI3:             "phi3",
@@ -1622,13 +1649,13 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.HC_ATTN_FN:                "blk.{bid}.hc_attn_fn",
     MODEL_TENSOR.HC_ATTN_BASE:              "blk.{bid}.hc_attn_base",
     MODEL_TENSOR.HC_ATTN_SCALE:             "blk.{bid}.hc_attn_scale",
-    MODEL_TENSOR.HC_FFN_FN:                 "blk.{bid}.hc_ffn_fn",
-    MODEL_TENSOR.HC_FFN_BASE:               "blk.{bid}.hc_ffn_base",
-    MODEL_TENSOR.HC_FFN_SCALE:              "blk.{bid}.hc_ffn_scale",
     MODEL_TENSOR.HC_ATTN_NORM:              "blk.{bid}.hc_attn_norm",         # qwen4exp
     MODEL_TENSOR.HC_ATTN_DOWN:              "blk.{bid}.hc_attn_down",         # qwen4exp
     MODEL_TENSOR.HC_ATTN_UP:                "blk.{bid}.hc_attn_up",           # qwen4exp
     MODEL_TENSOR.HC_ATTN_INJECT:            "blk.{bid}.hc_attn_inject",       # qwen4exp
+    MODEL_TENSOR.HC_FFN_FN:                 "blk.{bid}.hc_ffn_fn",
+    MODEL_TENSOR.HC_FFN_BASE:               "blk.{bid}.hc_ffn_base",
+    MODEL_TENSOR.HC_FFN_SCALE:              "blk.{bid}.hc_ffn_scale",
     MODEL_TENSOR.HC_FFN_NORM:               "blk.{bid}.hc_ffn_norm",          # qwen4exp
     MODEL_TENSOR.HC_FFN_DOWN:               "blk.{bid}.hc_ffn_down",          # qwen4exp
     MODEL_TENSOR.HC_FFN_UP:                 "blk.{bid}.hc_ffn_up",            # qwen4exp
@@ -1673,6 +1700,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.ENC_FFN_GATE:              "enc.blk.{bid}.ffn_gate",
     MODEL_TENSOR.ENC_FFN_DOWN:              "enc.blk.{bid}.ffn_down",
     MODEL_TENSOR.ENC_FFN_UP:                "enc.blk.{bid}.ffn_up",
+    MODEL_TENSOR.ENC_AUX_NORM:             "enc.aux_norm",
     MODEL_TENSOR.ENC_OUTPUT_NORM:           "enc.output_norm",
     MODEL_TENSOR.CLS:                       "cls",
     MODEL_TENSOR.CLS_OUT:                   "cls.output",
@@ -2051,9 +2079,30 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.NEXTN_HC_HEAD_DOWN:        "blk.{bid}.nextn.hc_head_down",
     MODEL_TENSOR.NEXTN_HC_HEAD_UP:          "blk.{bid}.nextn.hc_head_up",
     MODEL_TENSOR.FC:                        "fc",
+    # dspark drafter
+    MODEL_TENSOR.DSPARK_FC:                 "dspark.fc",
+    MODEL_TENSOR.DSPARK_HIDDEN_NORM:        "dspark.hidden_norm",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_A:      "dspark.markov_head_a",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_B:      "dspark.markov_head_b",
+    MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD:    "dspark.confidence_head",
     MODEL_TENSOR.DSPARK_MARKOV_W1:          "markov_w1",
+    MODEL_TENSOR.DFLY_LAYER_FUSION:         "layer_fusion",
+    MODEL_TENSOR.DFLY_CTX_NORM:             "context_norm",
+    MODEL_TENSOR.DFLY_HC_HIDDEN_NORM:       "hidden_correction.hidden_norm",
+    MODEL_TENSOR.DFLY_HC_EMBED_NORM:        "hidden_correction.embed_norm",
+    MODEL_TENSOR.DFLY_HC_GATE:              "hidden_correction.gate",
+    MODEL_TENSOR.DFLY_HC_UP:                "hidden_correction.up",
+    MODEL_TENSOR.DFLY_HC_DOWN:              "hidden_correction.down",
     MODEL_TENSOR.DSPARK_MARKOV_W2:          "markov_w2",
     MODEL_TENSOR.DSPARK_CONF_PROJ:          "conf_proj",
+    # dspark drafter
+    MODEL_TENSOR.DSPARK_FC:                 "dspark.fc",
+    MODEL_TENSOR.DSPARK_HIDDEN_NORM:        "dspark.hidden_norm",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_A:      "dspark.markov_head_a",
+    MODEL_TENSOR.DSPARK_MARKOV_HEAD_B:      "dspark.markov_head_b",
+    MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD:    "dspark.confidence_head",
+    MODEL_TENSOR.DSPARK_LOG_SNR_FC1:        "dspark.log_snr_fc1",
+    MODEL_TENSOR.DSPARK_LOG_SNR_FC2:        "dspark.log_snr_fc2",
     MODEL_TENSOR.DFLASH_ATTN_CONV_BASE:     "blk.{bid}.attn_conv_base",
     MODEL_TENSOR.DFLASH_ATTN_CONV_PROJ:     "blk.{bid}.attn_conv_proj",
     MODEL_TENSOR.DFLASH_FFN_CONV_BASE:      "blk.{bid}.ffn_conv_base",
@@ -2190,7 +2239,6 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.V_QF_FFN_UP,
         MODEL_TENSOR.V_QF_FFN_DOWN,
         MODEL_TENSOR.V_QF_FFN_NORM,
-        MODEL_TENSOR.V_QF_PROJ_NORM,
         MODEL_TENSOR.V_MULTI_PROJ_IMG_POS,
         MODEL_TENSOR.V_MULTI_PROJ_QUERY,
         MODEL_TENSOR.V_MULTI_PROJ_LINEAR,
@@ -2962,59 +3010,29 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
     ],
-    MODEL_ARCH.CLEF: [
+    MODEL_ARCH.DSPARK: [
+        # dspark drafter: feature-reuse projection + small transformer trunk +
+        # lm head + two aux heads. Decoder blocks reuse the standard ATTN_*/FFN_*
+        # names.
         MODEL_TENSOR.TOKEN_EMBD,
-        MODEL_TENSOR.OUTPUT_NORM,
-        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.DSPARK_FC,
+        MODEL_TENSOR.DSPARK_HIDDEN_NORM,
         MODEL_TENSOR.ATTN_NORM,
         MODEL_TENSOR.ATTN_Q,
-        MODEL_TENSOR.ATTN_Q_NORM,
         MODEL_TENSOR.ATTN_K,
-        MODEL_TENSOR.ATTN_K_NORM,
         MODEL_TENSOR.ATTN_V,
         MODEL_TENSOR.ATTN_OUT,
-        MODEL_TENSOR.ATTN_POST_NORM,
-        MODEL_TENSOR.ATTN_GATE,
-        MODEL_TENSOR.ATTN_QKV,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.FFN_NORM,
         MODEL_TENSOR.FFN_GATE,
         MODEL_TENSOR.FFN_DOWN,
         MODEL_TENSOR.FFN_UP,
-        MODEL_TENSOR.SSM_A,
-        MODEL_TENSOR.SSM_CONV1D,
-        MODEL_TENSOR.SSM_DT,
-        MODEL_TENSOR.SSM_NORM,
-        MODEL_TENSOR.SSM_BETA,
-        MODEL_TENSOR.SSM_ALPHA,
-        MODEL_TENSOR.SSM_OUT,
-        # decision head
-        MODEL_TENSOR.TOKEN_TYPES,
-        MODEL_TENSOR.DEC_ATTN_NORM,
-        MODEL_TENSOR.DEC_ATTN_Q,
-        MODEL_TENSOR.DEC_ATTN_K,
-        MODEL_TENSOR.DEC_ATTN_V,
-        MODEL_TENSOR.DEC_ATTN_OUT,
-        MODEL_TENSOR.DEC_CROSS_ATTN_NORM,
-        MODEL_TENSOR.DEC_CROSS_ATTN_NORM_KV,
-        MODEL_TENSOR.DEC_CROSS_ATTN_Q,
-        MODEL_TENSOR.DEC_CROSS_ATTN_K,
-        MODEL_TENSOR.DEC_CROSS_ATTN_V,
-        MODEL_TENSOR.DEC_CROSS_ATTN_OUT,
-        MODEL_TENSOR.DEC_FFN_NORM,
-        MODEL_TENSOR.DEC_FFN_DOWN,
-        MODEL_TENSOR.DEC_FFN_UP,
-        MODEL_TENSOR.DECISION_HIDDEN_NORM,
-        MODEL_TENSOR.DECISION_PROJ_MEMORY,
-        MODEL_TENSOR.DECISION_PROJ_QUESTION,
-        MODEL_TENSOR.DECISION_PROJ_OPTION_QUESTION,
-        MODEL_TENSOR.DECISION_PROJ_GLOBAL,
-        MODEL_TENSOR.DECISION_PROJ_OPTION_CONTEXT,
-        MODEL_TENSOR.DECISION_PROJ_OPTION_LEXICAL,
-        MODEL_TENSOR.DECISION_OPTION_SUMMARY_NORM,
-        MODEL_TENSOR.DECISION_FIELD_NORM,
-        MODEL_TENSOR.DECISION_OPTION_NORM,
-        MODEL_TENSOR.DECISION_SCALES,
-        MODEL_TENSOR.DECISION_SCORER,
-        MODEL_TENSOR.DECISION_SCORER_OUT,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_A,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_B,
+        MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD,
     ],
     MODEL_ARCH.QWEN35MOE: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -3053,6 +3071,33 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_HNORM,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+    ],
+    MODEL_ARCH.DSPARK: [
+        # dspark drafter: feature-reuse projection + small transformer trunk +
+        # lm head + two aux heads. Decoder blocks reuse the standard ATTN_*/FFN_*
+        # names. The forward graph and block-diffusion draft loop are implemented
+        # in src/models/dspark.cpp and common/speculative.cpp.
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.DSPARK_FC,
+        MODEL_TENSOR.DSPARK_HIDDEN_NORM,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_A,
+        MODEL_TENSOR.DSPARK_MARKOV_HEAD_B,
+        MODEL_TENSOR.DSPARK_CONFIDENCE_HEAD,
+        MODEL_TENSOR.DSPARK_LOG_SNR_FC1,
+        MODEL_TENSOR.DSPARK_LOG_SNR_FC2,
     ],
     MODEL_ARCH.QWEN4EXP: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -3105,10 +3150,12 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.PLE_NORM_QUERY,
         MODEL_TENSOR.PLE_NORM_CONV,
         MODEL_TENSOR.PLE_CONV1D,
-        # MTP block: [fc_embedding | fc_hidden] as eh_proj, its own hyper-connection mixer as the head
+        # NextN/MTP draft head
         MODEL_TENSOR.NEXTN_EH_PROJ,
+        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
         MODEL_TENSOR.NEXTN_ENORM,
         MODEL_TENSOR.NEXTN_HNORM,
+        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_HC_HEAD_NORM,
         MODEL_TENSOR.NEXTN_HC_HEAD_DOWN,
         MODEL_TENSOR.NEXTN_HC_HEAD_UP,
@@ -5447,6 +5494,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.ATTN_K,
         MODEL_TENSOR.ATTN_V,
         MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_GATE,
         MODEL_TENSOR.ATTN_Q_NORM,
         MODEL_TENSOR.ATTN_K_NORM,
         MODEL_TENSOR.ATTN_SINKS,
@@ -5480,9 +5528,17 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_UP_SHEXP,
         MODEL_TENSOR.FC,
         MODEL_TENSOR.ENC_OUTPUT_NORM,
+        MODEL_TENSOR.ENC_AUX_NORM,
         MODEL_TENSOR.D2T,
         # optional DSpark heads
         MODEL_TENSOR.DSPARK_MARKOV_W1,
+        MODEL_TENSOR.DFLY_LAYER_FUSION,
+        MODEL_TENSOR.DFLY_CTX_NORM,
+        MODEL_TENSOR.DFLY_HC_HIDDEN_NORM,
+        MODEL_TENSOR.DFLY_HC_EMBED_NORM,
+        MODEL_TENSOR.DFLY_HC_GATE,
+        MODEL_TENSOR.DFLY_HC_UP,
+        MODEL_TENSOR.DFLY_HC_DOWN,
         MODEL_TENSOR.DSPARK_MARKOV_W2,
         MODEL_TENSOR.DSPARK_CONF_PROJ,
         MODEL_TENSOR.DFLASH_ATTN_CONV_BASE,
@@ -5971,6 +6027,13 @@ class GGMLQuantizationType(IntEnum):
     NVFP4   = 40
     Q1_0    = 41
     Q2_0    = 42
+    TQ3_1S  = 46
+    TQ4_1S  = 47
+    Q8_CR   = 48
+    Q5_CR   = 49
+    Q6_CR   = 50
+    PQ2_0   = 142
+    PTQ1_0  = 143
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -6027,6 +6090,14 @@ class LlamaFileType(IntEnum):
     MOSTLY_NVFP4         = 39  # except 1d tensors
     MOSTLY_Q1_0          = 40  # except 1d tensors
     MOSTLY_Q2_0          = 41  # except 1d tensors
+    MOSTLY_Q8_CR         = 42  # except 1d tensors, ConvRot-rotated Q8_0
+    MOSTLY_TQ3_1S        = 43  # except 1d tensors
+    MOSTLY_TQ4_1S        = 44  # except 1d tensors
+    MOSTLY_Q5_CR         = 45  # except 1d tensors, ConvRot-rotated Q5_0
+    MOSTLY_Q6_CR         = 46  # except 1d tensors, ConvRot-rotated Q6_K
+    MOSTLY_PQ2_0         = 141  # group-128 Prism Q2_0
+    MOSTLY_PQ2_0_LEGACY  = 142  # historical Prism spelling
+    MOSTLY_PTQ1_0        = 143  # group-128 Prism ternary
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -6181,6 +6252,16 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
+    GGMLQuantizationType.PQ2_0:   (128, 2 + 32),
+    GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
+    GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
+    GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
+    # same layout as Q8_0, but the rows are rotated in groups of 256 (ConvRot)
+    GGMLQuantizationType.Q8_CR:   (256, 8 * (2 + 32)),
+    # same layout as Q5_0, but the rows are rotated in groups of 256 (ConvRot)
+    GGMLQuantizationType.Q5_CR:   (256, 8 * (2 + 4 + 16)),
+    # same layout as Q6_K (256 elements/block), but the rows are rotated in groups of 256 (ConvRot)
+    GGMLQuantizationType.Q6_CR:   (256, 2 + 128 + 64 + 16),   # block_q6_K: d(2)+ql(128)+qh(64)+scales(16)
 }
 
 

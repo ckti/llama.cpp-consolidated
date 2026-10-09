@@ -68,7 +68,7 @@ jobs:
           version_major: ${{ env.OPENVINO_VERSION_MAJOR }}
           version_full: ${{ env.OPENVINO_VERSION_FULL }}
 
-  windows-2022-openvino-cache:
+  windows-2022-rocm-cache:
     runs-on: windows-2022
 
     env:

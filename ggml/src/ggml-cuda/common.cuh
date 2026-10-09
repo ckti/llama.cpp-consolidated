@@ -183,6 +183,14 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
 
 // ---------------------------------------------------------------------------------------------------------
 
+// GGML_CUDA_BATCH_INVARIANT=1: prefer kernels whose per-column arithmetic does not depend on the
+// number of columns in the batch (1 to 8), so that a token decoded alone and a token verified
+// inside a speculative batch see the same logits bit for bit. Costs some throughput at 2 to 8 columns.
+static inline bool ggml_cuda_batch_invariant() {
+    static const bool enabled = getenv("GGML_CUDA_BATCH_INVARIANT") != nullptr;
+    return enabled;
+}
+
 #define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
 #define GGML_CUDA_MAX_STREAMS 8
@@ -268,7 +276,7 @@ static const char * cu_get_error_str(CUresult err) {
 #define FP16_AVAILABLE
 #endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
 
-#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
+#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610 && __CUDA_ARCH__ != 600
 #define FAST_FP16_AVAILABLE
 #endif // defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
 
@@ -312,13 +320,13 @@ static bool fp16_available(const int cc) {
 
 static bool fast_fp16_available(const int cc) {
     return GGML_CUDA_CC_IS_AMD(cc) ||
-        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610) ||
+        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610 && ggml_cuda_highest_compiled_arch(cc) != 600) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && fp16_available(cc));
 }
 
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fast_fp16_hardware_available(const int cc) {
-    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610) || GGML_CUDA_CC_IS_AMD(cc) ||
+    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610 && cc != 600) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 }
 
@@ -748,6 +756,20 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // defined(GGML_USE_HIP)
 }
 
+// c += dot(a as 4 unsigned bytes, b as 4 signed bytes). Used by the ternary paths that keep the raw
+// digits {0,1,2} and subtract the exact integer activation sum once per block instead of biasing
+// every word (two SIMD ops per 4 weights). PTX dp4a takes mixed .u32.s32 operand types directly.
+static __device__ __forceinline__ int ggml_cuda_dp4a_us(const unsigned int a, const int b, int c) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+    asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(c) : "r"(a), "r"(b), "r"(c));
+    return c;
+#else
+    const uint8_t * a8 = (const uint8_t *) &a;
+    const int8_t  * b8 = (const int8_t *)  &b;
+    return c + (int) a8[0]*b8[0] + (int) a8[1]*b8[1] + (int) a8[2]*b8[2] + (int) a8[3]*b8[3];
+#endif
+}
+
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {
     acc += v*u;
 }
@@ -847,12 +869,12 @@ static __device__ __forceinline__ float ggml_cuda_e8m0_to_fp32(uint8_t x) {
 static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
 #if defined(GGML_USE_HIP) && defined(CDNA3) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60200000
     // ROCm does not support fp8 in software on devices with fp8 hardware,
-    // but CDNA3 supports only e4m3_fnuz (no inf).
+    // but CDNA3 supports only e4m3_fnuz (no inf). CDNA4 (gfx950) uses standard e4m3fn.
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.
     const __hip_fp8_e4m3_fnuz xf = *reinterpret_cast<const __hip_fp8_e4m3_fnuz *>(&bits);
     return static_cast<float>(xf) / 2;
 #else
-#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
+#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= 900
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.
     const __nv_fp8_e4m3 xf = *reinterpret_cast<const __nv_fp8_e4m3 *>(&bits);
     return static_cast<float>(xf) / 2;
@@ -996,6 +1018,99 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q2_0> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PQ2_0> {
+    static constexpr int qk = QK_PQ2_0;
+    static constexpr int qr = QR_PQ2_0;
+    static constexpr int qi = QI_PQ2_0;
+};
+
+// PTQ1_0 packs trits base-3, five per byte, so element order is not positional. It
+// follows the CPU codec exactly: a 16-byte chunk of qs, then an 8-byte chunk, then qh
+// at four trits per byte. Trits come out by the base-3 remainder recurrence
+// t = (v*3)>>8 with v = (v*3)&0xFF, two integer ops per step and no table.
+static __device__ __forceinline__ int ptq1_0_trit(const block_ptq1_0 * x, const int e) {
+    uint8_t b;
+    int n;
+    if (e < 80) {                       // qs[0..15], chunk of 16
+        b = x->qs[e & 15];              n = e >> 4;
+    } else if (e < 120) {               // qs[16..23], chunk of 8
+        const int t = e - 80;
+        b = x->qs[16 + (t & 7)];        n = t >> 3;
+    } else {                            // qh[0..1], four trits per byte
+        const int t = e - 120;
+        b = x->qh[t & 1];               n = t >> 1;
+    }
+
+    uint32_t v = b;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        if (i < n) {
+            v = (v * 3) & 0xFF;
+        }
+    }
+    return (int) ((v * 3) >> 8) - 1;
+}
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PTQ1_0> {
+    static constexpr int qk = QK_PTQ1_0;
+    static constexpr int qr = QR_PTQ1_0;
+    static constexpr int qi = QI_PTQ1_0;
+};
+
+// Activation (src1) q8_1 layouts produced by quantize_row_q8_1_cuda and consumed by the MMVQ kernels.
+// Every layout keeps block_q8_1's bytes per row, so launcher strides in block_q8_1 units are valid
+// for all three; only the byte order inside a column differs.
+enum ggml_cuda_q8_1_layout : int {
+    GGML_CUDA_Q8_1_AOS      = 0, // plain block_q8_1 array (every type except the PTQ1_0 cases below)
+    GGML_CUDA_Q8_1_SOA_ISUM = 1, // PTQ1_0, one column: warp-transposed, exact int sums (ggml_cuda_ptq1_q8_word)
+    GGML_CUDA_Q8_1_PT       = 2, // PTQ1_0, 2-8 columns or MoE ids: planar-transposed (mmvq-ptq1_0.cuh)
+};
+
+// Column-count helper, not the layout decision. 2-8 columns and MoE (ids) take the planar
+// kernel. One column returns the Ada default (SOA_ISUM). Ampere and GGML_CUDA_BATCH_INVARIANT
+// override that to PT in ggml_cuda_q8_1_layout_host, which is what the quantizer and the kernel
+// switch both call. This helper does not consult the compute capability.
+static constexpr __host__ __device__ ggml_cuda_q8_1_layout ggml_cuda_q8_1_layout_for(ggml_type type_src0, int ncols_dst, bool has_ids) {
+#if defined(GGML_USE_HIP)
+    GGML_UNUSED(type_src0); GGML_UNUSED(ncols_dst); GGML_UNUSED(has_ids);
+    return GGML_CUDA_Q8_1_AOS;
+#else
+    if (type_src0 != GGML_TYPE_PTQ1_0) {
+        return GGML_CUDA_Q8_1_AOS;
+    }
+    return (ncols_dst == 1 && !has_ids) ? GGML_CUDA_Q8_1_SOA_ISUM : GGML_CUDA_Q8_1_PT;
+#endif
+}
+
+// ggml_cuda_q8_1_layout_host is defined below ggml_cuda_info(); it reads the device
+// compute capability, which is not declared yet at this point in the header.
+
+// Warp-transposed (SoA) q8_1 activation layout for the ternary MMVQ.
+//
+// One PTQ1_0 K-block (128 weights) consumes 4 block_q8_1 = 36 words (32 qs + 4 ds). In the
+// small-K MMVQ geometry each lane owns one K-block, so with the plain AoS layout a warp-wide
+// load of "word w" touches 32 lines 144 B apart: ~36 L1 wavefronts per instruction, ~1300 per
+// K-iteration against ~250 for the weights themselves. That LSU traffic, not GDDR, capped the
+// PTQ1 GEMV near 370 GB/s on Ada. Here K-blocks are grouped by 32 and word w of the group is
+// stored contiguously, so the same load is 32 consecutive words = 1 wavefront.
+// Bytes per column are unchanged when K is padded to a multiple of 32*128 = 4096.
+#define GGML_CUDA_PTQ1_Q8_GROUP_KB     32
+#define GGML_CUDA_PTQ1_Q8_WORDS_PER_KB 36
+#define GGML_CUDA_PTQ1_Q8_GROUP_WORDS  (GGML_CUDA_PTQ1_Q8_GROUP_KB * GGML_CUDA_PTQ1_Q8_WORDS_PER_KB)
+#define GGML_CUDA_PTQ1_K_PAD           (GGML_CUDA_PTQ1_Q8_GROUP_KB * QK_PTQ1_0)
+
+// Word offset (within one activation column) of word w (0..7 = qs words, 8 = ds) of block_q8_1 ib.
+static constexpr __host__ __device__ int ggml_cuda_ptq1_q8_word(int ib, int w) {
+    const int kb   = ib >> 2;
+    const int sub  = ib & 3;
+    const int g    = kb >> 5;
+    const int lane = kb & 31;
+    const int ww   = w < 8 ? sub * 8 + w : 32 + sub;
+    return g * GGML_CUDA_PTQ1_Q8_GROUP_WORDS + ww * GGML_CUDA_PTQ1_Q8_GROUP_KB + lane;
+}
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;
     static constexpr int qr = QR4_0;
@@ -1033,6 +1148,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
     static constexpr int qr = QR8_0;
     static constexpr int qi = QI8_0;
     static constexpr int bs = sizeof(block_q8_0);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ4_1S> {
+    static constexpr int qk = QK_TQ4_1S;
+    static constexpr int qr = 1;              // QR_TQ4_1S
+    static constexpr int qi = QK_TQ4_1S / 4;  // = QK/(4*QR): 8 int8-quads per block
 };
 
 template<>
@@ -1187,6 +1309,11 @@ struct ggml_cuda_device_info {
 
     cuda_device_info devices[GGML_CUDA_MAX_DEVICES] = {};
 
+    // peer access availability: peer_access[from][to] = true when
+    // cudaDeviceEnablePeerAccess(from, to) succeeded at init time.
+    // When false, cross-device copies must use host staging instead.
+    bool peer_access[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_DEVICES] = {{}};
+
     std::array<float, GGML_CUDA_MAX_DEVICES> default_tensor_split = {};
 };
 
@@ -1194,6 +1321,24 @@ const ggml_cuda_device_info & ggml_cuda_info();
 
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
+
+// The producer and MMVQ consumer must agree on the packed q8_1 layout.
+static inline ggml_cuda_q8_1_layout ggml_cuda_q8_1_layout_host(ggml_type type_src0, int ncols_dst, bool has_ids) {
+    const ggml_cuda_q8_1_layout layout = ggml_cuda_q8_1_layout_for(type_src0, ncols_dst, has_ids);
+    if (layout == GGML_CUDA_Q8_1_SOA_ISUM && ggml_cuda_batch_invariant()) {
+        return GGML_CUDA_Q8_1_PT;
+    }
+    if (layout == GGML_CUDA_Q8_1_SOA_ISUM) {
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE && cc < GGML_CUDA_CC_ADA_LOVELACE) {
+            return GGML_CUDA_Q8_1_PT;
+        }
+    }
+    return layout;
+}
+
+// raw device allocation, honors GGML_CUDA_ENABLE_UNIFIED_MEMORY. free with cudaFree
+cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device);
 
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
@@ -1282,6 +1427,7 @@ struct ggml_cuda_graph {
         void *   node_src_data_ptrs[GGML_MAX_SRC];
         int64_t  node_src_ne[GGML_MAX_SRC][GGML_MAX_DIMS];
         size_t   node_src_nb[GGML_MAX_SRC][GGML_MAX_DIMS];
+        uint64_t kv_stream_generation;
     };
     std::vector<node_properties> node_props;
 
@@ -1443,6 +1589,79 @@ struct ggml_cuda_stream_context {
     }
 };
 
+// Fused recurrent-state gather for GATED_DELTA_NET. build_rs materialises GET_ROWS(cache, s_copy)
+// into a temp per layer that only the GDN kernel reads; when the graph evaluator can prove that, it
+// skips the GET_ROWS and records the gather here so the kernel reads cache row ids[seq] directly.
+struct ggml_cuda_gated_delta_net_gather {
+    const float *   base       = nullptr; // cache rows [row_stride floats each]
+    const int32_t * ids        = nullptr; // per-seq row index
+    int64_t         row_stride = 0;       // in floats
+};
+
+// Owned by the backend context that evaluates the graph: registrations are keyed by node pointer,
+// so they are only meaningful for the evaluation that made them. Reset at the start of every
+// graph evaluation/capture; never shared between contexts or threads.
+struct ggml_cuda_gdn_gather_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_gated_delta_net_gather> gathers;
+
+    void reset() {
+        gathers.clear();
+    }
+
+    void set(const ggml_tensor * gdn, const ggml_cuda_gated_delta_net_gather & gather) {
+        gathers[gdn] = gather;
+    }
+
+    const ggml_cuda_gated_delta_net_gather * find(const ggml_tensor * gdn) const {
+        const auto it = gathers.find(gdn);
+        return it == gathers.end() ? nullptr : &it->second;
+    }
+};
+
+// A Hadamard transform (MUL_MAT with GGML_HINT_SRC0_IS_HADAMARD, optionally preceded by the sign
+// flip) whose only consumers are PTQ1_0 mat-vecs writes the q8_1-quantized activation into its own
+// output buffer instead of the F32 result (the quantized rows are 9/8 bytes per element, so they
+// fit in the F32 allocation), and the mat-vecs skip their quantize launch. The output buffer's
+// lifetime is exactly the consumers' lifetime, so nothing about allocation changes. Keyed by tensor
+// identity (the transform output and every reshape view of it that a mat-vec consumes), never by
+// data pointer: ggml-alloc recycles a dead output's block for later tensors in the same graph, and a
+// later PTQ1_0 mat-vec whose src1 landed there must not mistake its F32 rows for q8_1. Valid for one
+// graph evaluation.
+struct ggml_cuda_fwht_q8 {
+    ggml_cuda_q8_1_layout layout = GGML_CUDA_Q8_1_AOS;
+    int64_t               ne0    = 0;       // padded row width the quantizer wrote (what the mat-vec expects)
+    int64_t               ncols  = 0;       // rows quantized (src1->ne[1] of every consumer)
+    const void *          data   = nullptr; // the q8_1 rows: the transform's own output buffer, or a pool block
+                                            // held for the rest of the graph when that buffer aliases the input
+};
+
+struct ggml_cuda_fwht_q8_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_fwht_q8> entries;
+    std::vector<std::unique_ptr<ggml_cuda_pool_alloc<char>>> held; // released at reset(), newest first (VMM pool is LIFO)
+
+    // the implicit destructor would release `held` oldest first, which the VMM pool asserts on. The
+    // owning context also calls reset() before its pools go away (this member is declared before them).
+    ~ggml_cuda_fwht_q8_context() {
+        reset();
+    }
+
+    void reset() {
+        entries.clear();
+        while (!held.empty()) {
+            held.pop_back();
+        }
+    }
+
+    void set(const ggml_tensor * out, const ggml_cuda_fwht_q8 & e) {
+        entries[out] = e;
+    }
+
+    const ggml_cuda_fwht_q8 * find(const ggml_tensor * out) const {
+        const auto it = entries.find(out);
+        return it == entries.end() ? nullptr : &it->second;
+    }
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
@@ -1455,14 +1674,109 @@ struct ggml_backend_cuda_context {
 
     int curr_stream_no = 0;
 
+    // Per-graph-eval shared-quantize cache for the mmvq path. Several matvecs in one decode
+    // layer consume the same normed activation (Q/V/K read attn_norm; the router, fused
+    // gate/up and shared-expert gate read attn_post_norm), and each used to re-quantize it to
+    // q8_1 — ~60% of all quantize launches were duplicates. The most recent quantization is
+    // kept in a persistent device buffer and reused when the same src1 tensor is seen again in
+    // the same graph eval with identical layout. Stream ordering makes overwrite safe (all
+    // consumers of the previous entry are already enqueued before the next quantize runs),
+    // and the buffer only grows on shape changes, which force a CUDA-graph re-capture anyway.
+    // Retired (outgrown) device buffers, freed at teardown. Named at class scope: MSVC mangles
+    // a type nested in an unnamed struct as <unnamed-tag>, so two identical nested copies
+    // collide into one decorated name and the linker rejects the object (LNK1179).
+    struct retired_buf { char * ptr; size_t cap; int dev; };
+
+    struct {
+        char *              ptr  = nullptr;      // raw device memory (not pool), grow-only
+        size_t              cap  = 0;            // usable bytes
+        int                 dev  = -1;           // device the buffer was allocated on
+        const ggml_tensor * src1 = nullptr;      // key: tensor identity ...
+        const void *        data = nullptr;      // ... and its data pointer
+        uint64_t            epoch = 0;           // valid only within this graph eval
+        size_t              size = 0;            // quantized bytes
+        int64_t             ne10_padded = 0;     // layout keys
+        ggml_type           type = GGML_TYPE_COUNT;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } q8_cache;
+
+    // Same idea for the TQ activation pre-rotation (forward block WHT + q8_1 quantize): the MoE
+    // gate and up projections consume the same normed activation, so the rotation ran twice per
+    // layer. Keyed by tensor identity, data pointer, size and graph-eval epoch; main-stream only.
+    struct {
+        char *              ptr  = nullptr;
+        size_t              cap  = 0;
+        int                 dev  = -1;
+        const ggml_tensor * src1 = nullptr;
+        const void *        data = nullptr;
+        uint64_t            epoch = 0;
+        size_t              size = 0;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } tq_rot_cache;
+
+    // Per-expert address tables for the MoE weight indirection (see tq_build_expert_table). One
+    // entry per expert tensor, built on first use and kept for the life of the context: a captured
+    // graph replays kernels that read this exact address, so it cannot be pool memory and cannot be
+    // freed early. Same discipline as the caches above.
+    struct moe_expert_table {
+        const void *  base      = nullptr;   // src0->data the table was built from
+        int64_t       nb_expert = 0;
+        int           n_expert  = 0;
+        int           dev       = -1;
+        const void ** ptr       = nullptr;   // device array of n_expert addresses
+    };
+    std::vector<moe_expert_table> moe_tables;
+    std::vector<retired_buf>      moe_tables_retired;
+
+    // The cached table for this expert tensor, built on first use. Stable across calls so a
+    // captured graph can keep referencing it.
+    const void ** moe_expert_table_get(const ggml_tensor * src0, int64_t nb_expert, cudaStream_t stream);
+
+    uint64_t graph_epoch = 1;
+
+    // Fusion hit counters. Read through ggml_backend_cuda_fusion_count(); test-backend-ops uses
+    // them to check that a fusion actually fired, not only that the fused result is right.
+    struct {
+        int64_t elem_chain    = 0;   // elementwise chains launched (ggml_cuda_fuse_elem_chain)
+        int64_t q8_cache_hits = 0;   // mmvq shared-quantize cache hits
+        int64_t fused_add     = 0;   // tuned multi-ADD runs (ggml_cuda_op_fused_add)
+        int64_t fused_mul     = 0;   // tuned multi-MUL runs (ggml_cuda_op_fused_mul)
+        int64_t mul_mat_bias  = 0;   // ADD epilogues folded into mul_mat_vec (bias or a full
+                                     // same-shape residual: both arrive as fusion x_bias)
+        int64_t mul_mat_glu   = 0;   // GLU epilogues folded into mul_mat_vec
+    } fusion_stats;
+    // Landing slots for paged-in experts. One slab per expert tensor, n_slots experts wide; the
+    // address table is pointed at a slot instead of at the expert's home address once it is copied.
+    struct moe_expert_slab {
+        const void * base = nullptr;
+        int64_t      nb_expert = 0;
+        int          n_slots = 0;
+        int          n_expert = 0;
+        int          n_routed = 0;
+        int          dev = -1;
+        void *       slab = nullptr;
+        // residency bookkeeping, all device-resident so the policy stays inside the graph
+        int32_t *    slot_expert = nullptr;   // n_slots,  expert in this slot or -1
+        int32_t *    claim       = nullptr;   // n_slots,  lowest routed index claiming it this call
+        int32_t *    hit         = nullptr;   // n_routed, already resident
+        int32_t *    won         = nullptr;   // n_routed, will read from a slot rather than in place
+        int32_t *    miss_expert = nullptr;   // n_routed
+        int32_t *    miss_slot   = nullptr;   // n_routed
+        int32_t *    n_miss      = nullptr;   // 1
+    };
+    std::vector<moe_expert_slab> moe_slabs;
+
+    moe_expert_slab * moe_expert_slab_get(const ggml_tensor * src0, int64_t nb_expert,
+                                          int n_expert, int n_routed, cudaStream_t stream);
+
 #ifdef USE_CUDA_GRAPH
-    // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
-    // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
-    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+
+    static const size_t max_cuda_graphs = 64;
 
     int64_t last_graph_eviction_sweep = 0;
 
-    ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
+    ggml_cuda_graph * cuda_graph(uint64_t graph_key) {
         const int64_t time_now = ggml_time_us();
 
         // sweep every 5s, evicting cuda graphs unused for >=10s
@@ -1477,9 +1791,18 @@ struct ggml_backend_cuda_context {
             }
         }
 
-        auto it = cuda_graphs.find(first_node_ptr);
+        auto it = cuda_graphs.find(graph_key);
         if (it == cuda_graphs.end()) {
-            it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto lru = cuda_graphs.begin();
+                for (auto c = cuda_graphs.begin(); c != cuda_graphs.end(); ++c) {
+                    if (c->second->last_used_time < lru->second->last_used_time) {
+                        lru = c;
+                    }
+                }
+                cuda_graphs.erase(lru);
+            }
+            it = cuda_graphs.emplace(graph_key, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
         return it->second.get();
@@ -1513,6 +1836,8 @@ struct ggml_backend_cuda_context {
     }
 
     ggml_cuda_stream_context concurrent_stream_context;
+    ggml_cuda_gdn_gather_context gdn_gather_context;
+    ggml_cuda_fwht_q8_context    fwht_q8_context;
 
     ~ggml_backend_cuda_context();
 
@@ -1527,6 +1852,10 @@ struct ggml_backend_cuda_context {
     cudaStream_t stream() { return stream(device, curr_stream_no); }
 
     ggml_cuda_stream_context & stream_context() { return concurrent_stream_context; }
+
+    ggml_cuda_gdn_gather_context & gdn_gathers() { return gdn_gather_context; }
+
+    ggml_cuda_fwht_q8_context & fwht_q8() { return fwht_q8_context; }
 
     cublasHandle_t cublas_handle() {
         if (cublas_handles[device][curr_stream_no] == nullptr) {

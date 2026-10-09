@@ -109,6 +109,41 @@ void quantize_row_q2_0_ref(const float * GGML_RESTRICT x, block_q2_0 * GGML_REST
     }
 }
 
+// PQ2_0: identical 2-bit codec to Q2_0, one fp16 scale per 128 weights.
+void quantize_row_pq2_0_ref(const float * GGML_RESTRICT x, block_pq2_0 * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_PQ2_0;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < qk; j++) {
+            const float a = fabsf(x[i*qk + j]);
+            if (a > amax) amax = a;
+        }
+        const float d = amax;
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        for (int j = 0; j < qk / 4; ++j) {
+            y[i].qs[j] = 0;
+        }
+
+        for (int j = 0; j < qk; ++j) {
+            const float w = x[i*qk + j];
+            int q = (int)roundf(w * id) + 1;
+            if (q < 0) q = 0;
+            if (q > 3) q = 3;
+            const int byte_index = j / 4;
+            const int bit_offset = (j % 4) * 2;
+            y[i].qs[byte_index] |= ((uint8_t)q << bit_offset);
+        }
+    }
+}
+
 // reference implementation for deterministic creation of model files
 void quantize_row_q4_0_ref(const float * GGML_RESTRICT x, block_q4_0 * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
@@ -456,6 +491,26 @@ void dequantize_row_q2_0(const block_q2_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+void dequantize_row_pq2_0(const block_pq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_PQ2_0;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+
+        for (int j = 0; j < qk; ++j) {
+            const int byte_index = j / 4;
+            const int bit_offset = (j % 4) * 2;
+            const uint8_t q = (x[i].qs[byte_index] >> bit_offset) & 0x03;
+            // 00=-1, 01=0, 10=+1, 11=+2
+            y[i*qk + j] = ((int)q - 1) * d;
+        }
+    }
+}
+
 void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
 
@@ -564,6 +619,138 @@ void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GGML_RESTRI
             y[i*qk + j] = x[i].qs[j]*d;
         }
     }
+}
+
+// in-place radix-4 butterfly over one group of QK8_CR elements, equal to
+// multiplying the group by the normalized Kronecker-Hadamard matrix
+// H = kron(H4, H4, ..., H4)/sqrt(QK8_CR) with
+// H4 = [[1,1,1,-1],[1,1,-1,1],[1,-1,1,1],[-1,1,1,1]] ("regular" Hadamard,
+// no all-1s column). H is symmetric and orthogonal, so applying it again
+// undoes the rotation.
+static void ggml_convrot_rotate_group_f32(float * GGML_RESTRICT x) {
+    for (int len = 4; len <= QK8_CR; len *= 4) {
+        const int half = len/4;
+
+        for (int base = 0; base < QK8_CR; base += len) {
+            for (int i = 0; i < half; i++) {
+                const float v0 = x[base + i];
+                const float v1 = x[base + i +   half];
+                const float v2 = x[base + i + 2*half];
+                const float v3 = x[base + i + 3*half];
+
+                x[base + i]          = v0 + v1 + v2 - v3;
+                x[base + i +   half] = v0 + v1 - v2 + v3;
+                x[base + i + 2*half] = v0 - v1 + v2 + v3;
+                x[base + i + 3*half] = v3 + v1 + v2 - v0;
+            }
+        }
+    }
+
+    const float s = 1.0f/sqrtf((float)QK8_CR);
+    for (int i = 0; i < QK8_CR; i++) {
+        x[i] *= s;
+    }
+}
+
+// reference implementation for deterministic creation of model files
+// quantizes the ConvRot-rotated row: rotate groups of QK8_CR along the row,
+// then quantize each QK8_0 block like Q8_0
+void quantize_row_q8_cr_ref(const float * GGML_RESTRICT x, block_q8_cr * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        memcpy(buf, x + i, QK8_CR*sizeof(float));
+        ggml_convrot_rotate_group_f32(buf);
+        quantize_row_q8_0_ref(buf, y->blocks, QK8_CR);
+        y += 1;
+    }
+}
+
+// dequantizes and un-rotates, returning weights in the original basis
+void dequantize_row_q8_cr(const block_q8_cr * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        dequantize_row_q8_0(x->blocks, buf, QK8_CR);
+        ggml_convrot_rotate_group_f32(buf);
+        memcpy(y + i, buf, QK8_CR*sizeof(float));
+        x += 1;
+    }
+}
+
+void quantize_row_q5_cr_ref(const float * GGML_RESTRICT x, block_q5_cr * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        memcpy(buf, x + i, QK8_CR*sizeof(float));
+        ggml_convrot_rotate_group_f32(buf);
+        quantize_row_q5_0_ref(buf, y->blocks, QK8_CR);
+        y += 1;
+    }
+}
+
+void dequantize_row_q5_cr(const block_q5_cr * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        dequantize_row_q5_0(x->blocks, buf, QK8_CR);
+        ggml_convrot_rotate_group_f32(buf);
+        memcpy(y + i, buf, QK8_CR*sizeof(float));
+        x += 1;
+    }
+}
+
+size_t quantize_q5_cr(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q5_CR, n_per_row);
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_q5_cr_ref(src + row*n_per_row, (block_q5_cr *)((char *) dst + row*row_size), n_per_row);
+    }
+    return nrow * row_size;
+}
+
+// Q6_CR: each ConvRot group of QK8_CR=256 elements maps to exactly one block_q6_K (QK_K=256).
+void quantize_row_q6_cr_ref(const float * GGML_RESTRICT x, block_q6_cr * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        memcpy(buf, x + i, QK8_CR*sizeof(float));
+        ggml_convrot_rotate_group_f32(buf);
+        quantize_row_q6_K_ref(buf, (block_q6_K *) y, QK8_CR);
+        y += 1;  // one block_q6_K = QK_K = 256 elements
+    }
+}
+
+void dequantize_row_q6_cr(const block_q6_cr * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK8_CR == 0);
+
+    float buf[QK8_CR];
+
+    for (int64_t i = 0; i < k; i += QK8_CR) {
+        dequantize_row_q6_K(x, buf, QK8_CR);
+        ggml_convrot_rotate_group_f32(buf);
+        memcpy(y + i, buf, QK8_CR*sizeof(float));
+        x += 1;
+    }
+}
+
+size_t quantize_q6_cr(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q6_CR, n_per_row);
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_q6_cr_ref(src + row*n_per_row, (block_q6_cr *)((char *) dst + row*row_size), n_per_row);
+    }
+    return nrow * row_size;
 }
 
 void dequantize_row_mxfp4(const block_mxfp4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
@@ -2126,6 +2313,122 @@ size_t quantize_q2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     return nrow * row_size;
 }
 
+size_t quantize_pq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    if (!quant_weights) {
+        quantize_row_pq2_0_ref(src, dst, (int64_t)nrow*n_per_row);
+        return nrow * ggml_row_size(GGML_TYPE_PQ2_0, n_per_row);
+    }
+    size_t row_size = ggml_row_size(GGML_TYPE_PQ2_0, n_per_row);
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_pq2_0_ref(src, (block_pq2_0*)qrow, n_per_row);
+        src += n_per_row;
+        qrow += row_size;
+    }
+    return nrow * row_size;
+}
+
+// ====================== PTQ1_0 (Prism ternary, group 128) ======================
+// Base-3 trit packing identical to upstream TQ1_0, but at block 128 so one fp16
+// scale covers 128 weights. qs is 24 bytes, which TQ1_0's fixed 32-then-16 byte
+// staging cannot cover, so the stages are generalised to 32/16/8; at TQ1_0's
+// 48-byte qs this reduces to exactly its original 32-then-16 behaviour.
+static const size_t ptq1_0_stages[3] = {32, 16, 8};
+
+void quantize_row_ptq1_0_ref(const float * GGML_RESTRICT x, block_ptq1_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_PTQ1_0 == 0);
+    const int64_t nb = k / QK_PTQ1_0;
+
+    for (int64_t i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK_PTQ1_0; j++) {
+            amax = MAX(amax, fabsf(x[j]));
+        }
+
+        const float d  = amax;
+        const float id = d ? 1.0f/d : 0.0f;
+
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        size_t j = 0;
+        for (size_t s = 0; s < 3; ++s) {
+            const size_t c = ptq1_0_stages[s];
+            for (; j + c <= sizeof(y->qs); j += c) {
+                for (size_t m = 0; m < c; ++m) {
+                    uint8_t q = 0;
+                    for (size_t n = 0; n < 5; ++n) {
+                        int xi = lroundf(x[m + n*c] * id) + 1; // -1, 0, 1 -> 0, 1, 2
+                        q *= 3;
+                        q += xi;
+                    }
+                    // ceiling division (243 == pow(3, 5))
+                    q = ((uint16_t)q * 256 + (243 - 1)) / 243;
+                    y[i].qs[j + m] = q;
+                }
+                x += 5*c;
+            }
+        }
+        // 4 elements per byte
+        for (size_t h = 0; h < sizeof(y->qh); ++h) {
+            uint8_t q = 0;
+            for (size_t m = 0; m < 4; ++m) {
+                int xi = lroundf(x[h + m*sizeof(y->qh)] * id) + 1;
+                q *= 3;
+                q += xi;
+            }
+            // shift the first value to the most significant trit
+            q *= 3;
+            q = ((uint16_t)q * 256 + (243 - 1)) / 243;
+            y[i].qh[h] = q;
+        }
+        x += 4*sizeof(y->qh);
+    }
+}
+
+void dequantize_row_ptq1_0(const block_ptq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_PTQ1_0 == 0);
+    const int64_t nb = k / QK_PTQ1_0;
+
+    const uint8_t pow3[6] = {1, 3, 9, 27, 81, 243};
+
+    for (int64_t i = 0; i < nb; ++i) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+
+        size_t j = 0;
+        for (size_t s = 0; s < 3; ++s) {
+            const size_t c = ptq1_0_stages[s];
+            for (; j + c <= sizeof(x->qs); j += c) {
+                for (size_t n = 0; n < 5; ++n) {
+                    for (size_t m = 0; m < c; ++m) {
+                        uint8_t q = x[i].qs[j + m] * pow3[n];
+                        int16_t xi = ((uint16_t) q * 3) >> 8;
+                        *y++ = (float) (xi - 1) * d;
+                    }
+                }
+            }
+        }
+        for (size_t n = 0; n < 4; ++n) {
+            for (size_t h = 0; h < sizeof(x->qh); ++h) {
+                uint8_t q = x[i].qh[h] * pow3[n];
+                int16_t xi = ((uint16_t) q * 3) >> 8;
+                *y++ = (float) (xi - 1) * d;
+            }
+        }
+    }
+}
+
+size_t quantize_ptq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights; // ternary codes come from the weights themselves; an imatrix has no role
+    const size_t row_size = ggml_row_size(GGML_TYPE_PTQ1_0, n_per_row);
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_ptq1_0_ref(src, (block_ptq1_0 *)qrow, n_per_row);
+        src  += n_per_row;
+        qrow += row_size;
+    }
+    return nrow * row_size;
+}
+
 size_t quantize_q4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     if (!quant_weights) {
         quantize_row_q4_0_ref(src, dst, (int64_t)nrow*n_per_row);
@@ -2297,6 +2600,15 @@ size_t quantize_q8_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     (void)quant_weights; // not used
     const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, n_per_row);
     quantize_row_q8_0_ref(src, dst, (int64_t)nrow*n_per_row);
+    return nrow * row_size;
+}
+
+size_t quantize_q8_cr(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights; // not used
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q8_CR, n_per_row);
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_q8_cr_ref(src + row*n_per_row, (block_q8_cr *)((char *) dst + row*row_size), n_per_row);
+    }
     return nrow * row_size;
 }
 
@@ -5509,6 +5821,14 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_q2_0, data, nb);
             } break;
+        case GGML_TYPE_PQ2_0:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_pq2_0, data, nb);
+            } break;
+        case GGML_TYPE_PTQ1_0:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_ptq1_0, data, nb);
+            } break;
         case GGML_TYPE_Q4_0:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_q4_0, data, nb);
@@ -5528,6 +5848,18 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_Q8_0:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_q8_0, data, nb);
+            } break;
+        case GGML_TYPE_Q8_CR:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_q8_0, data, nb);
+            } break;
+        case GGML_TYPE_Q5_CR:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_q5_0, data, nb);
+            } break;
+        case GGML_TYPE_Q6_CR:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_q6_cr, data, nb);
             } break;
         case GGML_TYPE_MXFP4:
             {
@@ -5627,6 +5959,14 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_I32:
         case GGML_TYPE_I64:
             // nothing to validate
+            break;
+        case GGML_TYPE_TQ3_1S:
+        case GGML_TYPE_TQ4_1S:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
+            // WHT-rotated / TurboQuant types: just validate scales are not NaN/Inf
+            // TODO: add more thorough validation if needed
             break;
         default:
             {

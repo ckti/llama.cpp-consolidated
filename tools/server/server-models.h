@@ -17,6 +17,12 @@
 #include <string>
 #include <unordered_map>
 
+// Signals between router parent and model child processes.
+// Also used by server.cpp (the child process entry point).
+#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
+#define CMD_CHILD_TO_ROUTER_STATE "cmd_child_to_router:state:" // followed by json string
+#define CMD_CHILD_TO_ROUTER_ERROR "cmd_child_to_router:error:"
+
 /**
  * state diagram:
  *
@@ -102,6 +108,19 @@ struct server_model_meta {
     bool is_failed() const {
         return status == SERVER_MODEL_STATUS_UNLOADED && exit_code != 0;
     }
+
+    // true when the child was killed by a signal (e.g. SIGABRT from OOM,
+    // SIGTERM from force-kill).  exit_code is the negated signal number.
+    bool is_signaled() const {
+        return status == SERVER_MODEL_STATUS_UNLOADED && exit_code < 0;
+    }
+
+    // the signal number if is_signaled(), 0 otherwise
+    int exit_signal() const {
+        return is_signaled() ? -exit_code : 0;
+    }
+
+    std::string last_error = {}; // error message from CMD_CHILD_TO_ROUTER_ERROR or GGML_ABORT
 
     void update_args(common_preset_context & ctx_presets, std::string bin_path);
     void update_caps(const common_params & base);
@@ -275,6 +294,7 @@ public:
         int exit_code = 0; // only valid if status == UNLOADED
         json loaded_info = nullptr;
         json progress = nullptr;
+        std::optional<std::string> last_error = std::nullopt;
     };
     // update the status of a model instance (thread-safe)
     // also send SSE notification to /models/sse endpoint

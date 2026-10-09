@@ -6,46 +6,37 @@
 #include "ggml-backend-impl.h"
 
 #include <vector>
+#include <algorithm>
+#include <cstdlib>
 
-// must stay in sync with the kernel_fwht_<type>_<N> templates in misc.metal. Widths up to
-// 512 run on the simdgroup kernel and need no threadgroup memory. The wider ones allocate
-// float[N] per threadgroup, so they are only available where that fits.
-static bool ggml_metal_fwht_supported_size(int64_t n, size_t max_tg_mem) {
-    if (n == 64 || n == 128 || n == 256 || n == 512) {
-        return true;
-    }
-
-    if (n == 1024 || n == 2048 || n == 4096 || n == 8192) {
-        return (size_t) n * sizeof(float) <= max_tg_mem;
-    }
-
-    return false;
+bool ggml_metal_op_mul_mat_use_mm_nb(const struct ggml_tensor * op, bool has_tensor) {
+    static const int n_min = getenv("GGML_METAL_Q1_0_NB_MIN") ? atoi(getenv("GGML_METAL_Q1_0_NB_MIN")) : 6;
+    static const int n_max = getenv("GGML_METAL_Q1_0_NB_MAX") ? atoi(getenv("GGML_METAL_Q1_0_NB_MAX")) : 64;
+    static const int m_min = getenv("GGML_METAL_Q1_0_NB_MIN_NE01") ? atoi(getenv("GGML_METAL_Q1_0_NB_MIN_NE01")) : 4096;
+    return has_tensor && op->src[0]->type == GGML_TYPE_Q1_0 && op->src[1]->type == GGML_TYPE_F32 &&
+           n_min > 0 && op->src[1]->ne[1] >= n_min && op->src[1]->ne[1] <= n_max && op->src[0]->ne[1] >= m_min;
 }
 
-// the FWHT kernels handle a Hadamard-hinted MUL_MAT only under these conditions. supports_op
-// and the dispatch must ask the same question: an F16 src1 that is admitted but then falls
-// through reaches the generic path, which has no F32 src0 by F16 src1 kernel.
-bool ggml_metal_op_mul_mat_use_fwht(const struct ggml_tensor * op, size_t max_tg_mem) {
-    return ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD && op->type == GGML_TYPE_F32 &&
-           (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) && ggml_is_contiguous(op->src[1]) &&
-           ggml_is_contiguous(op) && ggml_are_same_shape(op->src[1], op) &&
-           ggml_metal_fwht_supported_size(op->src[1]->ne[0], max_tg_mem);
-}
-
-bool ggml_metal_op_mul_mat_use_mm(const struct ggml_tensor * op, bool has_simdgroup_mm) {
+bool ggml_metal_op_mul_mat_use_mm(const struct ggml_tensor * op, bool has_simdgroup_mm, bool has_tensor) {
     const int64_t ne00 = op->src[0]->ne[0];
     const int64_t ne11 = op->src[1]->ne[1];
+    static const int mm_min = getenv("GGML_METAL_MM_MIN") ? atoi(getenv("GGML_METAL_MM_MIN")) : 8;
+    static const int q1_mv_max = getenv("GGML_METAL_Q1_0_MV_MAX") ? atoi(getenv("GGML_METAL_Q1_0_MV_MAX")) : 16;
+    const int n_min = op->src[0]->type == GGML_TYPE_Q1_0 ? std::max(mm_min, q1_mv_max) : mm_min;
+    const bool is_tq = op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S;
 
     return !ggml_is_transposed(op->src[0]) &&
            !ggml_is_transposed(op->src[1]) &&
-           has_simdgroup_mm && ne00 >= 64 && ne11 > 8;
+           has_simdgroup_mm && ne00 >= 64 &&
+           (ne11 > n_min || is_tq || ggml_metal_op_mul_mat_use_mm_nb(op, has_tensor));
 }
 
 bool ggml_metal_op_mul_mat_id_use_mm(const struct ggml_tensor * op, bool has_simdgroup_mm) {
     const int64_t ne00 = op->src[0]->ne[0];
     const int64_t ne21 = op->src[2]->ne[1];
+    const bool is_tq = op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S;
 
-    return has_simdgroup_mm && ne00 >= 64 && ne21 >= 32;
+    return has_simdgroup_mm && ne00 >= 64 && ne21 >= (is_tq ? 1 : 32);
 }
 
 // the most src1 rows of the few-row MMA kernels

@@ -144,12 +144,37 @@ if (NOT WIN32)
     )
 endif()
 
+# dspark Phase 1 forward-graph gate (Tier 1: synthetic tap features / Tier 2:
+# diff vs the DeepSpec python reference). Not wired into `ctest` since both
+# tiers need a real dspark GGUF passed on the command line; run manually.
+# Uses internal functions not exported with LLAMA_API, so like the tests below it
+# is skipped on Windows when building with shared libraries.
+if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
+    llama_build(test-dspark-forward.cpp)
+endif()
+
+# dspark loader gate for the GIDD log-SNR metadata contract: conditioning=true
+# requires finite, ordered min/max_log_snr (src/models/dspark.cpp
+# load_arch_hparams). Wired into `ctest` but skips (exit 0) until the tiny
+# random-weight variant suite is generated into the build tree:
+#   python3 tests/gen-tiny-dspark.py --suite <build>/tests/dspark-logsnr-variants
+llama_build_and_test(test-dspark-logsnr-meta.cpp LABEL "model"
+    ARGS "${CMAKE_CURRENT_BINARY_DIR}/dspark-logsnr-variants")
+
+# Requires a fixture model and reference JSON; run manually.
+llama_build(test-dspark-loop.cpp)
+
+# Requires a target/drafter pair; run manually.
+llama_build(test-dspark-real-eval.cpp)
+
 if (LLAMA_LLGUIDANCE)
     llama_build_and_test(test-grammar-llguidance.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 endif ()
 
 llama_build(test-recurrent-state-rollback.cpp)
 llama_build(test-save-load-state.cpp)
+
+llama_build_and_test(test-gdn-ingredient-replay.cpp LABEL "turbo")
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
@@ -160,6 +185,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-grammar-integration.cpp)
     llama_build_and_test(test-llama-grammar.cpp)
     llama_build_and_test(test-batch-alloc.cpp)
+    llama_build_and_test(test-dfly-fusion.cpp)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
@@ -193,6 +219,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # llama_build_and_test(test-double-float.cpp) # SLOW
 
     llama_build(test-llama-archs.cpp)
+    llama_build_and_test(test-kv-mean-center.cpp)
 
     set(MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models/")
     file(MAKE_DIRECTORY "${MODEL_DIR}")
@@ -250,6 +277,10 @@ llama_build_and_test(
     peg-parser/test-unicode.cpp
     peg-parser/tests.h
 )
+target_precompile_headers(test-peg-parser PRIVATE peg-parser/tests.h)
+
+llama_build_and_test(test-regex-partial.cpp)
+llama_build_and_test(test-vulkan-q2_0-shader-sim.cpp)
 
 if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "s390x")
     set(MODEL_NAME "tinyllamas/stories15M-q4_0.gguf")
@@ -272,9 +303,33 @@ llama_build_and_test(test-thread-safety.cpp ARGS -m "${MODEL_DEST}" -ngl 99 -p "
 set_tests_properties(test-thread-safety PROPERTIES FIXTURES_REQUIRED test-download-model)
 
 llama_build_and_test(test-arg-parser.cpp)
+if (NOT BUILD_SHARED_LIBS)
+    llama_build_and_test(test-kv-stream-plan.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-plan.cpp)
+    target_include_directories(test-kv-stream-plan PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    llama_build_and_test(test-kv-stream-config.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-config.cpp)
+    target_include_directories(test-kv-stream-config PRIVATE ${PROJECT_SOURCE_DIR}/src)
+endif()
+llama_build_and_test(test-kv-stream-softmax.cpp llama-kv-stream-softmax.cpp)
+if (GGML_CUDA)
+    llama_build_and_test(
+        test-kv-stream-bench-config.cpp
+        ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench/kv-stream-bench-config.cpp)
+    target_include_directories(test-kv-stream-bench-config PRIVATE ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench)
+    llama_build_and_test(test-kv-stream-cuda-buffer.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-buffer PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+    # The test exits 77 when no CUDA device is present (e.g. a CUDA build run
+    # on a GPU-less CI runner). ctest only treats that as a skip when
+    # SKIP_RETURN_CODE says so; without it the skip is recorded as a failure.
+    set_tests_properties(test-kv-stream-cuda-buffer PROPERTIES SKIP_RETURN_CODE 77)
+    llama_build_and_test(test-kv-stream-cuda-attn.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-attn PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+    llama_build_and_test(test-kv-stream-cuda-set-rows.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-set-rows PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+endif()
 llama_build_and_test(test-model-resolution.cpp)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)
+llama_build_and_test(test-speculative-adaptive.cpp)
 
 if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
   # TODO: repair known memory leaks
@@ -289,6 +344,28 @@ endif()
 
 # TODO: make this test (and others) not link `libllama` as it is not needed [TAG_TESTS_LLAMA_LINK]
 llama_build(test-backend-ops.cpp)
+if (NOT LLAMA_USE_SYSTEM_GGML)
+    llama_build(test-moe-cache.cpp)
+    if (GGML_CUDA)
+        # The test compares the cache's budget grants against cudaMemGetInfo,
+        # the same query the cache uses. On UMA devices (GB10, Jetson) the
+        # backend device memory API reports /proc/meminfo instead, so the
+        # reserve calculation must match the cache's own view.
+        find_package(CUDAToolkit QUIET)
+        if (CUDAToolkit_FOUND)
+            target_compile_definitions(test-moe-cache PRIVATE GGML_CUDA=1)
+            target_include_directories(test-moe-cache PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+            target_link_libraries(test-moe-cache PRIVATE CUDA::cudart)
+        endif()
+    endif()
+    llama_test(test-moe-cache LABEL "main;backend")
+    # The test exits 77 when no CUDA device is present. ctest only treats that
+    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
+    # runner records the skip as a failure.
+    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
+
+llama_build_and_test(test-moe-cache-fit.cpp)
 
 llama_build_and_test(test-tiled-mulmat.cpp)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
@@ -309,6 +386,8 @@ if (NOT GGML_BACKEND_DL AND GGML_CPU)
     # these tests use the backends directly and cannot be built with dynamic loading
     llama_build_and_test(test-barrier.cpp)
     llama_build_and_test(test-quantize-fns.cpp)
+    llama_build_and_test(test-ptq1_0-element-map.cpp)
+    llama_build_and_test(test-ptq1_0-cuda-dot.cpp)
     llama_build_and_test(test-quantize-perf.cpp)
     llama_build_and_test(test-rope.cpp)
     llama_build_and_test(test-col2im-1d.cpp)
@@ -349,6 +428,9 @@ get_filename_component(TEST_TARGET test-c.c NAME_WE)
 add_executable(${TEST_TARGET} test-c.c)
 target_link_libraries(${TEST_TARGET} PRIVATE llama)
 
+# TurboQuant WHT round-trip test (links ggml turbo codec symbols via llama)
+llama_build_and_test(test-turbo-quant.c LABEL "turbo")
+
 if (NOT LLAMA_USE_SYSTEM_GGML)
     # Needs non-public ggml-impl.h
     llama_build_and_test(test-gguf.cpp)
@@ -362,3 +444,23 @@ if (TARGET gguf-model-data)
     target_link_libraries(test-export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+# dspark Phase 1 forward-graph gate (Tier 1: synthetic tap features / Tier 2:
+# diff vs the Python reference implementation). Not wired into `ctest` since both
+# tiers need a real dspark GGUF passed on the command line; run manually.
+llama_build(test-dspark-forward.cpp)
+
+# dspark Phase 2 block-draft-loop gate (common_speculative_impl_draft_dspark):
+# diffs several rounds of the real draft loop against a Python
+# reference (scratchpad/dspark_phase2_py_ref.py) driven over an identical
+# synthetic target-feature stand-in. Not wired into `ctest`: needs a tiny
+# synthetic dspark GGUF + the reference JSON passed on the command line (see
+# scratchpad/dspark_build_tiny.py); run manually.
+llama_build(test-dspark-loop.cpp)
+
+# dspark Phase 3 real-target eval harness: drives the real draft/verify/accept
+# loop against a real target + real drafter GGUF to measure accept-rate/
+# tau (there is no CLI/server integration for draft-dspark yet -- see the
+# file's header comment). Not wired into `ctest`: needs real multi-GB GGUFs
+# passed on the command line; run manually on a GPU host.
+llama_build(test-dspark-real-eval.cpp)

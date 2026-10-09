@@ -194,6 +194,86 @@ struct callback_reader_data {
     size_t size;
 };
 
+static std::pair<int, int> test_prism_q2_layout() {
+    struct layout_case {
+        const char * name;
+        ggml_type stored_type;
+        int64_t width;
+        uint64_t data_size;
+        uint64_t norm_offset;
+        uint64_t tail_offset;
+        ggml_type expected_type;
+        bool truncated = false;
+    };
+    const layout_case cases[] = {
+        { "native Q2_0",        GGML_TYPE_Q2_0,  1024, 576, 576, 608, GGML_TYPE_Q2_0  },
+        { "legacy Prism Q2_0",  GGML_TYPE_Q2_0,  1024, 544, 544, 576, GGML_TYPE_PQ2_0 },
+        { "explicit PQ2_0",     GGML_TYPE_PQ2_0, 1024, 544, 544, 576, GGML_TYPE_PQ2_0 },
+        { "explicit PTQ1_0",    GGML_TYPE_PTQ1_0,1024, 448, 448, 480, GGML_TYPE_PTQ1_0 },
+        { "64-wide Q2_0",       GGML_TYPE_Q2_0,    64,  64,  64,  96, GGML_TYPE_Q2_0  },
+        { "ambiguous padding", GGML_TYPE_Q2_0,   128,  96,  96, 128, GGML_TYPE_Q2_0  },
+        { "bad later offset",  GGML_TYPE_Q2_0,  1024, 544, 544, 608, GGML_TYPE_COUNT },
+        { "bad legacy width",  GGML_TYPE_Q2_0,    64,  32,  32,  64, GGML_TYPE_COUNT },
+        { "bad native offset", GGML_TYPE_Q2_0,  1024, 576, 576, 640, GGML_TYPE_COUNT },
+        { "truncated legacy",  GGML_TYPE_Q2_0,  1024, 544, 544, 576, GGML_TYPE_PQ2_0, true },
+    };
+
+    int npass = 0;
+    int ntest = 0;
+    for (const auto & c : cases) {
+        FILE * file = tmpfile();
+        GGML_ASSERT(file != nullptr);
+        helper_write(file, GGUF_MAGIC, 4);
+        helper_write(file, uint32_t(GGUF_VERSION));
+        helper_write(file, uint64_t(3));
+        helper_write(file, uint64_t(0));
+
+        const char * names[] = { "weight", "norm", "tail" };
+        const uint64_t offsets[] = { 0, c.norm_offset, c.tail_offset };
+        for (int i = 0; i < 3; ++i) {
+            const std::string name = names[i];
+            helper_write(file, uint64_t(name.size()));
+            helper_write(file, name.data(), name.size());
+            helper_write(file, uint32_t(i == 0 ? 2 : 1));
+            helper_write(file, int64_t(i == 0 ? c.width : i == 1 ? 2 : 1));
+            if (i == 0) {
+                helper_write(file, int64_t(2));
+            }
+            helper_write(file, i == 0 ? c.stored_type : GGML_TYPE_F32);
+            helper_write(file, offsets[i]);
+        }
+        const size_t header_size = ftell(file);
+        const size_t padding = GGML_PAD(header_size, GGUF_DEFAULT_ALIGNMENT) - header_size;
+        const std::vector<uint8_t> data(padding + c.data_size + (c.truncated ? 0 : 64), 0);
+        helper_write(file, data.data(), data.size());
+        const auto bytes = read_file_to_buffer(file);
+        fclose(file);
+
+        for (bool no_alloc : { true, false }) {
+            ggml_context * ctx = nullptr;
+            const gguf_init_params params = { no_alloc, &ctx };
+            gguf_context * gguf = gguf_init_from_buffer(bytes.data(), bytes.size(), params);
+            const bool expected = c.expected_type != GGML_TYPE_COUNT && (no_alloc || !c.truncated);
+            bool ok = (gguf != nullptr) == expected;
+            if (gguf && expected) {
+                const ggml_tensor * weight = ggml_get_tensor(ctx, "weight");
+                ok = ok && gguf_get_tensor_type(gguf, 0) == c.expected_type;
+                ok = ok && weight && weight->type == c.expected_type;
+                if (weight) {
+                    const size_t row_size = ggml_row_size(c.expected_type, c.width);
+                    ok = ok && weight->nb[1] == row_size && ggml_nbytes(weight) == 2 * row_size;
+                }
+            }
+            gguf_free(gguf);
+            ggml_free(ctx);
+            ++ntest;
+            npass += ok;
+            printf("Prism layout %s (no_alloc=%d): %s\n", c.name, no_alloc, ok ? "OK" : "FAIL");
+        }
+    }
+    return { npass, ntest };
+}
+
 static size_t read_buffer_callback(void * userdata, void * output, uint64_t offset, size_t len) {
     GGML_ASSERT(len > 0);
 
@@ -1456,6 +1536,11 @@ int main(int argc, char ** argv) {
 
     int npass = 0;
     int ntest = 0;
+    {
+        const auto result = test_prism_q2_layout();
+        npass += result.first;
+        ntest += result.second;
+    }
     {
         std::pair<int, int> result = test_handcrafted_file(seed);
         npass += result.first;

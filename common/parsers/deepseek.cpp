@@ -223,8 +223,8 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
         }
 
         if (extract_reasoning && inputs.enable_thinking) {
-            reasoning = p.optional(THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
-            reasoning_with_tc = THINK_START +
+            reasoning = p.optional(p.space() + THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
+            reasoning_with_tc = p.space() + THINK_START +
                 p.reasoning(p.until_one_of({ TC_SEPARATOR + FC_START, FC_START, THINK_END })) +
                 p.space() + obligatory_tool_calls;
             allow_reasoning_with_tc = true;
