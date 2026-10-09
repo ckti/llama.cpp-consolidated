@@ -150,7 +150,7 @@ def _apply_wifsignaled_patch(path: str) -> None:
         f.write(content)
 
 # TODO @ngxson : this is temporary, to be removed in the future
-patches = [
+sheredom_patches = [
     # https://github.com/sheredom/subprocess.h/pull/102
     "vendor/sheredom/patch-bsd.patch",
     # https://github.com/sheredom/subprocess.h/pull/101
@@ -160,13 +160,32 @@ patches = [
         "vendor/sheredom/patch-glibc-older-than-2.29.patch",
 ]
 
+# local changes too large for the replacements above, kept as diffs and applied with git apply
+patch_files = [
+    # backport of the fix for the stack overflow on deeply nested values (nlohmann/json#5387)
+    # TODO: remove once nlohmann/json releases a version newer than 3.12.0
+    "vendor/nlohmann/json-deep-nesting.patch",
+]
+
 for url, filename in vendor.items():
     print(f"downloading {url} to {filename}") # noqa: NP100
     urllib.request.urlretrieve(url, filename)
 
+for filename, replacements in patches.items():
+    print(f"patching {filename}") # noqa: NP100
+    with open(filename, "r", encoding="utf-8", newline="") as f:
+        content = f.read()
+    for old, new in replacements:
+        if content.count(old) != 1:
+            print(f"Error: cannot apply patch on {filename}, upstream code has changed") # noqa: NP100
+            sys.exit(1)
+        content = content.replace(old, new)
+    with open(filename, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
 _apply_wifsignaled_patch("vendor/sheredom/subprocess.h")
 
-for patch in patches:
+for patch in sheredom_patches:
     print(f"applying {patch}") # noqa: NP100
     try:
         subprocess.check_call([
@@ -174,6 +193,14 @@ for patch in patches:
         ])
     except Exception as e:
         print(f"Error: {e}") # noqa: NP100
+        sys.exit(1)
+
+for patch_file in patch_files:
+    print(f"applying {patch_file}") # noqa: NP100
+    try:
+        subprocess.check_call(["git", "apply", patch_file])
+    except subprocess.CalledProcessError:
+        print(f"Error: cannot apply {patch_file}, upstream code has changed") # noqa: NP100
         sys.exit(1)
 
 print("Splitting httplib.h...") # noqa: NP100
