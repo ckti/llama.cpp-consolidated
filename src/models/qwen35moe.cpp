@@ -174,10 +174,6 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
     ggml_tensor * inp_pos     = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
-    // Only unmasked nextn extraction needs a hidden row for every token; otherwise the
-    // last layer runs on the output rows alone.
-    const bool narrow_last = inp_out_ids && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked);
-
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     for (int il = 0; il < n_layer; ++il) {
         res->t_layer_inp[il] = inpL;

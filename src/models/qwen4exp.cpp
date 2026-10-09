@@ -218,9 +218,6 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
                                            { hparams.ple_head_dim, ple_rows }, TENSOR_READ_LAZY);
     }
 
-    // MTP tensors sit in the trailing blocks; skip them entirely unless a draft head was asked for
-    const int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
-
     for (int il = 0; il < (int) hparams.n_layer_all; ++il) {
         auto & layer = layers[il];
 

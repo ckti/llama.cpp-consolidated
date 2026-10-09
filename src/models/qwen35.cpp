@@ -197,8 +197,6 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
                 "dspark dense capture (embeddings_capture_masked=false) is incompatible with simultaneous "
                 "masked MTP nextn extraction -- they share the same narrow-timing decision");
 
-    const bool narrow_before_last_layer = cparams.embeddings_nextn_masked && !capture_wants_dense;
-
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     for (int il = 0; il < n_layer; ++il) {
         res->t_layer_inp[il] = inpL;

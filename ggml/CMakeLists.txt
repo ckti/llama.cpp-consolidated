@@ -311,12 +311,12 @@ add_subdirectory(src)
 # tests and examples
 #
 
-if (GGML_BUILD_TESTS)
+if (GGML_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     enable_testing()
     add_subdirectory(tests)
 endif ()
 
-if (GGML_BUILD_EXAMPLES)
+if (GGML_BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples")
     add_subdirectory(examples)
 endif ()
 
