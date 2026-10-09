@@ -31,6 +31,7 @@ using llama_hadamard_rotations = std::unordered_map<const ggml_tensor *, llama_h
 
 struct llama_cparams;
 struct llama_layer;
+struct llama_prec_policy;
 
 struct llama_memory_context_i;
 
@@ -167,8 +168,14 @@ public:
 
     bool can_reuse(const llm_graph_params & params) override;
 
-    ggml_tensor * tokens = nullptr; // I32 [n_batch]
-    ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * tokens       = nullptr; // I32 [n_batch]
+    ggml_tensor * embd         = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * mixed_tokens = nullptr; // I32 [n_tok_rows], mixed path: ids of the token rows
+    ggml_tensor * mixed_slots  = nullptr; // I64 [n_tok_rows], mixed path: batch index of the token rows
+    ggml_tensor * mixed_embd   = nullptr; // F32 [n_embd, n_batch], mixed path: embd rows, token rows are overwritten
+    ggml_tensor * scale_rows   = nullptr; // F32 [1, n_batch], per-row scale: scale_tok for token rows, 1 for embd rows
+
+    float scale_tok = 1.0f;
 
     const int64_t n_embd = 0;
 };
@@ -347,8 +354,8 @@ public:
 
     // views of s_copy, computed once per graph
     // and shared across layers which use build_rs
-    ggml_tensor * s_copy_main;   // I32 [n_seqs]
-    ggml_tensor * s_copy_extra;  // I32 [n_rs - n_seqs]
+    ggml_tensor * s_copy_main; // I32 [n_seqs]
+    ggml_tensor * s_copy_tail; // I32 [n_rs - 1]
 
     // destination rows for the per-token snapshot writes (rotating ring),
     // only when n_rs_seq > 0. slot-major, oldest kept snapshot first:
@@ -867,6 +874,13 @@ struct llm_graph_params {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_dspark_ctx       * dspark_ctx;
+    bool                           dspark_has_context;
+    int64_t                        dspark_ctx_rows;
+    int64_t                        dspark_ctx_width;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
+
+    const llama_prec_policy * prec_policy = nullptr;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -901,6 +915,7 @@ struct llm_graph_params {
             ubatch.n_seq_tokens == other.ubatch.n_seq_tokens &&
             ubatch.n_seqs       == other.ubatch.n_seqs &&
             ubatch.n_seqs_unq   == other.ubatch.n_seqs_unq &&
+            ubatch.is_mixed()   == other.ubatch.is_mixed() &&
             (
                 (!ubatch.token && !other.ubatch.token) ||
                 (!ubatch.embd  && !other.ubatch.embd)  ||
@@ -922,6 +937,12 @@ struct llm_graph_params {
         }
 
         if (!can_reuse_ubatch) {
+            return false;
+        }
+
+        if ((dspark_ctx == nullptr) != (other.dspark_ctx == nullptr) ||
+            dspark_has_context != other.dspark_has_context || dspark_ctx_rows != other.dspark_ctx_rows ||
+            dspark_ctx_width != other.dspark_ctx_width) {
             return false;
         }
 
@@ -948,6 +969,10 @@ struct llm_graph_params {
         }
 
         // TODO: https://github.com/ggml-org/llama.cpp/pull/24340#discussion_r3448035248
+        if (cparams.n_capture_layers != other.cparams.n_capture_layers ||
+            cparams.capture_layer_idx != other.cparams.capture_layer_idx) {
+            return false;
+        }
         if (cparams.nextn_layer_offset != other.cparams.nextn_layer_offset) {
             return false;
         }
@@ -1028,6 +1053,7 @@ public:
     std::vector<ggml_tensor *> t_sampled_logits;
     std::vector<ggml_tensor *> t_candidates;
     std::vector<ggml_tensor *> t_sampled;
+    std::vector<ggml_tensor *> t_dspark_greedy;
     std::vector<llm_graph_fused_node> fused_nodes;
     std::vector<ggml_tensor *> t_sampled_probs;
 
@@ -1113,6 +1139,17 @@ struct llm_graph_context {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_dspark_ctx       * dspark_ctx;
+    bool                           dspark_has_context;
+    int64_t                        dspark_ctx_rows;
+    int64_t                        dspark_ctx_width;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
+
+    // Transforms shared by folded weights on the same activation. Key is (input, rotation);
+    // both must match. Valid for one graph build only.
+    mutable std::map<std::pair<const ggml_tensor *, const ggml_tensor *>, ggml_tensor *> hadamard_memo;
+
+    const llama_prec_policy * prec_policy;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1148,6 +1185,12 @@ struct llm_graph_context {
               ggml_tensor * cur, // ggml_tensor * b
               ggml_tensor * ids,
               ggml_tensor * w_s = nullptr) const;
+
+    // read rows of a token-embedding table; a Hadamard-latent table gets the
+    // inverse transform so the result is in the primal basis
+    ggml_tensor * build_embd_rows(
+              ggml_tensor * tok_embd,
+              ggml_tensor * ids) const;
 
     ggml_tensor * build_norm(
              ggml_tensor * cur,
@@ -1247,7 +1290,8 @@ struct llm_graph_context {
     // inputs
     //
 
-    ggml_tensor * build_inp_embd(ggml_tensor * tok_embd) const;
+    // tok_scale: applied to token rows only
+    ggml_tensor * build_inp_embd(ggml_tensor * tok_embd, float tok_scale = 1.0f) const;
     ggml_tensor * build_inp_pos() const;
     ggml_tensor * build_inp_attn_scale() const;
     ggml_tensor * build_inp_out_ids() const;
@@ -1408,15 +1452,15 @@ struct llm_graph_context {
     //         `llama_memory_recurrent`
     ggml_tensor * build_rs(
             ggml_tensor * s,
+            ggml_tensor * state_copy,
             ggml_tensor * state_copy_main,
-            ggml_tensor * state_copy_extra,
                 int32_t   state_size,
                 int32_t   n_seqs,
                uint32_t   n_rs,
                uint32_t   rs_head,
                uint32_t   rs_size,
                 int32_t   rs_zero,
-            const llm_graph_get_rows_fn & get_state_rows = ggml_get_rows) const;
+            const llm_graph_get_rows_fn & get_state_rows = nullptr) const;
 
     llm_graph_input_rs * build_rs_inp() const;
 
@@ -1425,7 +1469,7 @@ struct llm_graph_context {
             ggml_tensor * s,
                 int32_t   state_size,
                 int32_t   n_seqs,
-            const llm_graph_get_rows_fn & get_state_rows = ggml_get_rows) const;
+            const llm_graph_get_rows_fn & get_state_rows = nullptr) const;
 
     // like build_rs, but WITHOUT the main per-seq state gather: performs the
     // rs_zero clear and the extra-states relocation, then returns the 2D

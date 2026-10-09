@@ -332,10 +332,13 @@ static common_moe_cache_params common_moe_cache_from_bench_mode(const std::strin
 }
 
 static std::string parse_repack_mode(const std::string & value) {
+    if (value == "0" || value == "1") {
+        return value == "1" ? "on" : "off";
+    }
     if (value == "auto" || value == "on" || value == "off") {
         return value;
     }
-    throw std::invalid_argument("expected auto, on, or off");
+    throw std::invalid_argument("expected auto, on, off, 0, or 1");
 }
 
 static bool get_effective_repack(const std::string & cache_mode, const std::string & repack_mode) {
@@ -435,7 +438,7 @@ struct cmd_params {
     std::vector<int>                 n_gpu_layers;
     std::vector<int>                 n_cpu_moe;
     std::vector<std::string>         moe_cache;
-    std::string                      repack;
+    std::vector<std::string>         repack;
     std::vector<llama_split_mode>    split_mode;
     std::vector<llama_load_mode>     load_mode;
     std::vector<llama_lazy_mode>     lazy_mode;
@@ -486,7 +489,7 @@ static const cmd_params cmd_params_defaults = {
     /* n_gpu_layers         */ { -1 },
     /* n_cpu_moe            */ { 0 },
     /* moe_cache            */ { "auto" },
-    /* repack               */ "auto",
+    /* repack               */ { "auto" },
     /* split_mode           */ { LLAMA_SPLIT_MODE_LAYER },
     /* load_mode            */ { LLAMA_LOAD_MODE_AUTO },
     /* lazy_mode            */ { LLAMA_LAZY_MODE_AUTO },
@@ -520,6 +523,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("\n");
     printf("options:\n");
     printf("  -h, --help\n");
+    printf("  --version                                   show version and build info\n");
     printf("  --numa <distribute|isolate|numactl>         numa mode (default: disabled)\n");
     printf("  -r, --repetitions <n>                       number of times to repeat each test (default: %d)\n", cmd_params_defaults.reps);
     printf("  --prio <-1|0|1|2|3>                         process/thread priority (default: %d)\n", cmd_params_defaults.prio);
@@ -565,7 +569,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  -ncmoe, --n-cpu-moe <n>                           (default: %s)\n", join(cmd_params_defaults.n_cpu_moe, ",").c_str());
     printf("  --moe-cache <auto|on|soft|off|0|MiB>                   (default: %s)\n", join(cmd_params_defaults.moe_cache, ",").c_str());
     printf("                                                    on and fixed budgets disable weight repacking\n");
-    printf("  --repack <auto|on|off>                            weight repacking policy (default: %s)\n", cmd_params_defaults.repack.c_str());
+    printf("  --repack <auto|on|off|0|1>                        comma-separated repacking policies (default: %s)\n", join(cmd_params_defaults.repack, ",").c_str());
     printf("  -nr, --no-repack                                  equivalent to --repack off\n");
     printf("  -sm, --split-mode <none|layer|row|tensor>         (default: %s)\n", join(transform_to_str(cmd_params_defaults.split_mode, split_mode_str), ",").c_str());
     printf("  -mg, --main-gpu <i>                               (default: %s)\n", join(cmd_params_defaults.main_gpu, ",").c_str());
@@ -643,7 +647,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     params.no_warmup            = cmd_params_defaults.no_warmup;
     params.offline              = cmd_params_defaults.offline;
     params.n_gen_warmup         = cmd_params_defaults.n_gen_warmup;
-    params.repack               = cmd_params_defaults.repack;
     params.moe_cache_explicit    = cmd_params_defaults.moe_cache_explicit;
     params.n_gen_warmup_explicit = cmd_params_defaults.n_gen_warmup_explicit;
     params.repack_explicit       = cmd_params_defaults.repack_explicit;
@@ -661,6 +664,9 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
         try {
             if (arg == "-h" || arg == "--help") {
                 print_usage(argc, argv);
+                exit(0);
+            } else if (arg == "--version") {
+                llama_print_build_info(llama_version());
                 exit(0);
             } else if (arg == "-m" || arg == "--model") {
                 if (++i >= argc) {
@@ -867,10 +873,12 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                     invalid_param = true;
                     break;
                 }
-                params.repack = parse_repack_mode(argv[i]);
+                for (const auto & value : string_split<std::string>(argv[i], split_delim)) {
+                    params.repack.push_back(parse_repack_mode(value));
+                }
                 params.repack_explicit = true;
             } else if (arg == "-nr" || arg == "--no-repack") {
-                params.repack = "off";
+                params.repack = { "off" };
                 params.repack_explicit = true;
             } else if (llama_supports_rpc() && (arg == "-rpc" || arg == "--rpc")) {
                 if (++i >= argc) {
@@ -1227,7 +1235,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             p.hf_token      = params.hf_token;
             p.offline       = params.offline;
             p.model.hf_repo = params.hf_repo[i];
-            if (!params.hf_file.empty() && !params.hf_file[i].empty()) {
+            if (i < params.hf_file.size() && !params.hf_file[i].empty()) {
                 p.model.hf_file = params.hf_file[i];
             }
 
@@ -1321,6 +1329,9 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     if (params.no_host.empty()) {
         params.no_host = cmd_params_defaults.no_host;
     }
+    if (params.repack.empty()) {
+        params.repack = cmd_params_defaults.repack;
+    }
     if (params.n_threads.empty()) {
         params.n_threads = cmd_params_defaults.n_threads;
     }
@@ -1344,7 +1355,9 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     }
     for (const auto & cache_mode : params.moe_cache) {
         try {
-            (void) get_effective_repack(cache_mode, params.repack);
+            for (const auto & repack_mode : params.repack) {
+                (void) get_effective_repack(cache_mode, repack_mode);
+            }
         } catch (const std::invalid_argument & e) {
             fprintf(stderr, "error: %s\n", e.what());
             exit(1);
@@ -1488,6 +1501,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     for (const auto & ts : params.tensor_split)
     for (const auto & ot : params.tensor_buft_overrides)
     for (const auto & noh : params.no_host)
+    for (const auto & rpk : params.repack)
     for (const auto & embd : params.embeddings)
     for (const auto & nopo : params.no_op_offload)
     for (const auto & nb : params.n_batch)
@@ -1522,7 +1536,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .n_gpu_layers          = */ nl,
                 /* .n_cpu_moe             = */ ncmoe,
                 /* .moe_cache             = */ mc,
-                /* .repack                = */ get_effective_repack(mc, params.repack),
+                /* .repack                = */ get_effective_repack(mc, rpk),
                 /* .split_mode            = */ sm,
                 /* .load_mode             = */ lm,
                 /* .lazy_mode             = */ lzm,
@@ -1562,7 +1576,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .n_gpu_layers          = */ nl,
                 /* .n_cpu_moe             = */ ncmoe,
                 /* .moe_cache             = */ mc,
-                /* .repack                = */ get_effective_repack(mc, params.repack),
+                /* .repack                = */ get_effective_repack(mc, rpk),
                 /* .split_mode            = */ sm,
                 /* .load_mode             = */ lm,
                 /* .lazy_mode             = */ lzm,
@@ -1602,7 +1616,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .n_gpu_layers          = */ nl,
                 /* .n_cpu_moe             = */ ncmoe,
                 /* .moe_cache             = */ mc,
-                /* .repack                = */ get_effective_repack(mc, params.repack),
+                /* .repack                = */ get_effective_repack(mc, rpk),
                 /* .split_mode            = */ sm,
                 /* .load_mode             = */ lm,
                 /* .lazy_mode             = */ lzm,
@@ -2143,6 +2157,9 @@ struct markdown_printer : public printer {
         if (field == "no_host") {
             return "noh";
         }
+        if (field == "repack") {
+            return "rpk";
+        }
         if (field == "devices") {
             return "dev";
         }
@@ -2422,7 +2439,8 @@ static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_th
         for (int i = 1; i < n_tokens; i++) {
             tokens[i] = bench_random_token(seed, n_vocab);
         }
-        int res = llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens));
+        common_batch batch = common_batch_get_one(ctx, tokens.data(), n_tokens);
+        int res = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (res != 0) {
             fprintf(stderr, "%s: failed to decode prompt batch, res = %d\n", __func__, res);
             return false;
@@ -2443,8 +2461,13 @@ static bool test_gen(llama_context * ctx, int n_gen, int n_threads, uint64_t see
 
     llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : bench_random_token(seed, n_vocab);
 
+    common_batch batch(ctx);
+    llama_pos pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
+
     for (int i = 0; i < n_gen; i++) {
-        int res = llama_decode(ctx, llama_batch_get_one(&token, 1));
+        batch.clear();
+        batch.add(token, pos++, 0, true);
+        int res = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (res != 0) {
             fprintf(stderr, "%s: failed to decode generation batch, res = %d\n", __func__, res);
             return false;
@@ -2456,8 +2479,10 @@ static bool test_gen(llama_context * ctx, int n_gen, int n_threads, uint64_t see
 }
 
 static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
-    (void) level;
-    (void) text;
+    if (level == GGML_LOG_LEVEL_ERROR) {
+        fprintf(stderr, "%s", text);
+        return;
+    }
     (void) user_data;
 }
 

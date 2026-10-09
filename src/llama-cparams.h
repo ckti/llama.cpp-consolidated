@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llama-hparams.h"  // LLAMA_MAX_LAYERS
 #include "llama.h"
 #include "llama-hparams.h" // LLAMA_MAX_LAYERS
 
@@ -81,6 +82,9 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool training;           // set by llama_opt_init()
+
+    uint32_t kv_stream_arena_mib;
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 

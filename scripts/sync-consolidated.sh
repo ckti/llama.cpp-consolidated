@@ -112,3 +112,4 @@ if ! git merge-base --is-ancestor "${MINTPLEX_HEAD}" HEAD; then
 fi
 
 echo "Merge complete! Current HEAD: $(git rev-parse --short HEAD)"
+

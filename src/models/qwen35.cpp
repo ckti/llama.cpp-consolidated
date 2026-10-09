@@ -46,6 +46,10 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
 
+    // optional projection of the embeddings output
+    cls_out   = create_tensor(tn(LLM_TENSOR_CLS_OUT, "weight"), { n_embd, hparams.n_embd_out() }, TENSOR_NOT_REQUIRED);
+    cls_out_b = create_tensor(tn(LLM_TENSOR_CLS_OUT, "bias"),   { hparams.n_embd_out() },         TENSOR_NOT_REQUIRED);
+
     // if output is NULL, init from the input tok embed
     if (output == NULL) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
@@ -262,6 +266,25 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         }
     }
     cur = inpL;
+    // multi-layer hidden-state tap: concatenate captured layers along dim0 into a
+    // single [n_capture * n_embd, n_outputs] tensor for one bulk host copy.
+    if (cparams.n_capture_layers > 0) {
+        ggml_tensor * cap = h_capture[0];
+        GGML_ASSERT(cap && "capture layer 0 was not produced (index out of executed range?)");
+        for (uint32_t c = 1; c < cparams.n_capture_layers; ++c) {
+            GGML_ASSERT(h_capture[c] && "a requested capture layer was not produced");
+            cap = ggml_concat(ctx0, cap, h_capture[c], 0);
+        }
+        cb(cap, "h_capture_cat", -1);
+        res->t_h_capture = cap;
+
+        // The capture concat chain is a side-branch off the per-layer outputs,
+        // not reachable by traversing backward from the logits tensor expanded
+        // below -- without this it's built but never added to gf, so the
+        // scheduler never visits or backend-assigns it (ggml_set_output() alone
+        // marks intent, it doesn't add the node to the graph).
+        ggml_build_forward_expand(gf, cap);
+    }
 
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
 
@@ -294,6 +317,16 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
+
+    if (model.cls_out) {
+        ggml_tensor * embd = build_lora_mm(model.cls_out, cur);
+        if (model.cls_out_b) {
+            embd = ggml_add(ctx0, embd, model.cls_out_b);
+        }
+        cb(embd, "result_embd_proj", -1);
+        res->t_embd = embd;
+        ggml_build_forward_expand(gf, embd);
+    }
 
     // LM head
     cur = build_lora_mm(model.output, cur, model.output_s);
@@ -628,10 +661,25 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     // TODO: make static using `ggml_build_forward_select()`
     //       see llm_graph_context::build_inp_embd() for reference
     ggml_tensor * tok_embd;
+    ASSERT_EMBD_OR_TOKEN(ubatch);
     if (ubatch.token) {
         ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
 
         tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
+
+        // a Hadamard-latent embedding table stores rotated rows; restore the primal
+        // basis right after the lookup (h = s * (H z)), exactly like the trunk path in
+        // llm_graph_context::build_inp_embd. Without this the draft head consumes
+        // embeddings in the rotated basis and llama_verify_hadamard_graph refuses the graph.
+        if (hadamard_inverses) {
+            const auto it = hadamard_inverses->find(tok_embd_w);
+            if (it != hadamard_inverses->end()) {
+                tok_embd = llama_mul_mat_hadamard(ctx0, tok_embd, it->second.rot);
+                if (it->second.signs) {
+                    tok_embd = ggml_mul(ctx0, tok_embd, it->second.signs);
+                }
+            }
+        }
     } else {
         tok_embd = inp->embd;
     }
@@ -933,9 +981,18 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
 
     cb(cur, "h_nextn", -1);
-    res->t_h_nextn = cur;
 
-    cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    // llama_context copies the first n_outputs rows of t_h_nextn when embeddings_nextn_masked is set,
+    // so publish the output rows only (as the trunk graph does); unmasked readers index by token.
+    // Matters as soon as an MTP batch has more tokens than outputs, e.g. catch-up rows decoded
+    // together with the first draft row.
+    if (cparams.embeddings_nextn_masked) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        res->t_h_nextn = cur;
+    } else {
+        res->t_h_nextn = cur;
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
     cb(cur, "mtp_shared_head_norm", -1);
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;

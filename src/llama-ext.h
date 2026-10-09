@@ -117,6 +117,21 @@ LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value
 // chain multiple trained NextN heads. Default 0 (first head).
 LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 
+// Marks the entries that a joint decision head (clef) reads, the default is 0
+// See https://github.com/ggml-org/llama.cpp/pull/29831 for details
+// A run of entries with the same value is one span, spans must be separated by entries with value 0
+// An option belongs to the last question before it
+enum llama_decision_order {
+    LLAMA_DECISION_ORDER_NONE            = 0, // not read by the head
+    LLAMA_DECISION_ORDER_QUESTION_NOUL   = 1, // text of a question
+    LLAMA_DECISION_ORDER_QUESTION_CHOICE = 2,
+    LLAMA_DECISION_ORDER_QUESTION_SCORE  = 3,
+    LLAMA_DECISION_ORDER_OPTION          = 4, // text of an option
+};
+
+// The embeddings output has one value per entry: row i is the score of option i
+LLAMA_API bool llama_batch_ext_set_decision_order(struct llama_batch_ext * batch, int32_t idx, enum llama_decision_order order);
+
 LLAMA_API bool llama_model_supports_mtp_chain(const struct llama_model * model);
 
 // True only for architectures whose "draft" is a same-position early-exit of the
@@ -208,7 +223,8 @@ LLAMA_API void llama_set_dspark_ctx(
         struct llama_context * ctx,
         const float           * feat,
               int64_t           n_ctx_rows,
-              int64_t           n_embd_cap);
+              int64_t           n_embd_cap,
+        const int32_t         * pos = nullptr);
 //
 // dspark drafter: model-level metadata + auxiliary-head weights
 //
@@ -235,6 +251,7 @@ struct llama_dspark_meta {
     int32_t block_size    = 0;
     int32_t mask_token_id = 0;
     int64_t markov_rank   = 0; // 0 if the checkpoint has no markov head
+    bool    graph_corrected = false; // greedy predecessor chain already applied on device
 };
 // Returns false if `model` is not a loaded dspark model (block_size == 0).
 LLAMA_API bool llama_model_dspark_get_meta(

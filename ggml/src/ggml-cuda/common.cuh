@@ -111,9 +111,9 @@
 #define GGML_CUDA_CC_IS_QY2(cc)      (cc >= GGML_CUDA_CC_QY2 && cc < GGML_CUDA_CC_PH1)
 #define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1)
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+#if !defined(GGML_USE_HIP) && (defined(GGML_USE_MUSA) || CUDART_VERSION >= 11070)
 #    define GGML_CUDA_USE_CUB
-#endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+#endif  // !defined(GGML_USE_HIP) && (defined(GGML_USE_MUSA) || CUDART_VERSION >= 11070)
 
 // PDL host-side support (cudaLaunchKernelEx) requires CUDART >= 11.8.
 // However, this has been bugged in CTK < 12.3 for MSVC builds, see
@@ -131,15 +131,15 @@ static __device__ __forceinline__ void ggml_cuda_syncwarp() {
 }
 
 static __device__ __forceinline__ void ggml_cuda_pdl_sync() {
-#if defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
+#if defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
     cudaGridDependencySynchronize();
-#endif // defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
+#endif // defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
 }
 
 static __device__ __forceinline__ void ggml_cuda_pdl_lc() {
-#if defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
+#if defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
     cudaTriggerProgrammaticLaunchCompletion();
-#endif // defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
+#endif // defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
 }
 
 #ifdef __CUDA_ARCH_LIST__
@@ -182,6 +182,14 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
 #endif // __CUDA_ARCH_LIST__
 
 // ---------------------------------------------------------------------------------------------------------
+
+// GGML_CUDA_BATCH_INVARIANT=1: prefer kernels whose per-column arithmetic does not depend on the
+// number of columns in the batch (1 to 8), so that a token decoded alone and a token verified
+// inside a speculative batch see the same logits bit for bit. Costs some throughput at 2 to 8 columns.
+static inline bool ggml_cuda_batch_invariant() {
+    static const bool enabled = getenv("GGML_CUDA_BATCH_INVARIANT") != nullptr;
+    return enabled;
+}
 
 #define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
@@ -237,7 +245,7 @@ static const char * cu_get_error_str(CUresult err) {
 #define CU_CHECK(err) CUDA_CHECK_GEN(err, CUDA_SUCCESS, cu_get_error_str)
 #endif
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if !defined(GGML_USE_HIP)
 #    define CUDA_SET_SHARED_MEMORY_LIMIT(kernel, nbytes)                                                       \
         do {                                                                                                   \
             static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = { false };                         \
@@ -252,7 +260,7 @@ static const char * cu_get_error_str(CUresult err) {
         do {                                             \
             GGML_UNUSED(nbytes);                         \
         } while (0)
-#endif // !(defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#endif // !defined(GGML_USE_HIP)
 
 #if CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
 #define GGML_CUDA_ASSUME(x) __builtin_assume(x)
@@ -285,21 +293,21 @@ static const char * cu_get_error_str(CUresult err) {
 #define VOLTA_MMA_AVAILABLE
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
 #define TURING_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define AMPERE_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL && __CUDA_ARCH__ < GGML_CUDA_CC_RUBIN
 #    define BLACKWELL_MMA_AVAILABLE
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define CP_ASYNC_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 
 #if !defined(GGML_CUDA_NO_FA) && !(defined(GGML_USE_MUSA) && __MUSA_ARCH__ < 220)
 #define FLASH_ATTN_AVAILABLE
@@ -327,6 +335,12 @@ static bool fp16_mma_hardware_available(const int cc) {
     return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_VOLTA) ||
         GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
+}
+
+// To be used for feature selection of external libraries, e.g. cuBLAS.
+static bool fast_bf16_hardware_available(const int cc) {
+        return (GGML_CUDA_CC_IS_AMD(cc) && (cc >= GGML_CUDA_CC_RDNA3 || GGML_CUDA_CC_IS_CDNA(cc)))
+            || (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE);
 }
 
 static bool bf16_mma_hardware_available(const int cc) {
@@ -391,7 +405,7 @@ static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 
 // Maximum number of bytes that can be copied in a single instruction.
 static constexpr __device__ int ggml_cuda_get_max_cpy_bytes() {
-#ifdef GGML_USE_HIP
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
     return 16;
 #else
 #if __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
@@ -399,7 +413,7 @@ static constexpr __device__ int ggml_cuda_get_max_cpy_bytes() {
 #else
     return 8;
 #endif // __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
-#endif // GGML_USE_HIP
+#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
 }
 
 
@@ -418,10 +432,6 @@ static __device__ void no_device_code(
     __trap();
 
     GGML_UNUSED(no_device_code); // suppress unused function warning
-
-#if defined(GGML_USE_MUSA)
-    __builtin_unreachable();
-#endif // defined(GGML_USE_MUSA)
 }
 
 #ifdef __CUDA_ARCH__
@@ -451,7 +461,7 @@ struct ggml_cuda_unroll<1> {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ int warp_reduce_sum(int x) {
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
     return __reduce_add_sync(0xffffffff, x);
 #else
 #pragma unroll
@@ -459,7 +469,7 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
         x += __shfl_xor_sync(0xffffffff, x, offset, width);
     }
     return x;
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 }
 
 template<int width = WARP_SIZE>
@@ -690,16 +700,11 @@ static __device__ __forceinline__ half2 ggml_cuda_hmax2(const half2 a, const hal
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
 #pragma unroll
    for (int offset = width/2; offset > 0; offset >>= 1) {
        x = ggml_cuda_hmax2(x, __shfl_xor_sync(0xffffffff, x, offset, width));
    }
    return x;
-#else
-   GGML_UNUSED(x);
-   NO_DEVICE_CODE;
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
 }
 
 #if (defined(CUDART_VERSION) && CUDART_VERSION < CUDART_HMASK) || defined(GGML_USE_HIP) || \
@@ -749,6 +754,20 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
 
 #endif // defined(GGML_USE_HIP)
+}
+
+// c += dot(a as 4 unsigned bytes, b as 4 signed bytes). Used by the ternary paths that keep the raw
+// digits {0,1,2} and subtract the exact integer activation sum once per block instead of biasing
+// every word (two SIMD ops per 4 weights). PTX dp4a takes mixed .u32.s32 operand types directly.
+static __device__ __forceinline__ int ggml_cuda_dp4a_us(const unsigned int a, const int b, int c) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+    asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(c) : "r"(a), "r"(b), "r"(c));
+    return c;
+#else
+    const uint8_t * a8 = (const uint8_t *) &a;
+    const int8_t  * b8 = (const int8_t *)  &b;
+    return c + (int) a8[0]*b8[0] + (int) a8[1]*b8[1] + (int) a8[2]*b8[2] + (int) a8[3]*b8[3];
+#endif
 }
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {
@@ -1039,6 +1058,58 @@ struct ggml_cuda_type_traits<GGML_TYPE_PTQ1_0> {
     static constexpr int qi = QI_PTQ1_0;
 };
 
+// Activation (src1) q8_1 layouts produced by quantize_row_q8_1_cuda and consumed by the MMVQ kernels.
+// Every layout keeps block_q8_1's bytes per row, so launcher strides in block_q8_1 units are valid
+// for all three; only the byte order inside a column differs.
+enum ggml_cuda_q8_1_layout : int {
+    GGML_CUDA_Q8_1_AOS      = 0, // plain block_q8_1 array (every type except the PTQ1_0 cases below)
+    GGML_CUDA_Q8_1_SOA_ISUM = 1, // PTQ1_0, one column: warp-transposed, exact int sums (ggml_cuda_ptq1_q8_word)
+    GGML_CUDA_Q8_1_PT       = 2, // PTQ1_0, 2-8 columns or MoE ids: planar-transposed (mmvq-ptq1_0.cuh)
+};
+
+// Column-count helper, not the layout decision. 2-8 columns and MoE (ids) take the planar
+// kernel. One column returns the Ada default (SOA_ISUM). Ampere and GGML_CUDA_BATCH_INVARIANT
+// override that to PT in ggml_cuda_q8_1_layout_host, which is what the quantizer and the kernel
+// switch both call. This helper does not consult the compute capability.
+static constexpr __host__ __device__ ggml_cuda_q8_1_layout ggml_cuda_q8_1_layout_for(ggml_type type_src0, int ncols_dst, bool has_ids) {
+#if defined(GGML_USE_HIP)
+    GGML_UNUSED(type_src0); GGML_UNUSED(ncols_dst); GGML_UNUSED(has_ids);
+    return GGML_CUDA_Q8_1_AOS;
+#else
+    if (type_src0 != GGML_TYPE_PTQ1_0) {
+        return GGML_CUDA_Q8_1_AOS;
+    }
+    return (ncols_dst == 1 && !has_ids) ? GGML_CUDA_Q8_1_SOA_ISUM : GGML_CUDA_Q8_1_PT;
+#endif
+}
+
+// ggml_cuda_q8_1_layout_host is defined below ggml_cuda_info(); it reads the device
+// compute capability, which is not declared yet at this point in the header.
+
+// Warp-transposed (SoA) q8_1 activation layout for the ternary MMVQ.
+//
+// One PTQ1_0 K-block (128 weights) consumes 4 block_q8_1 = 36 words (32 qs + 4 ds). In the
+// small-K MMVQ geometry each lane owns one K-block, so with the plain AoS layout a warp-wide
+// load of "word w" touches 32 lines 144 B apart: ~36 L1 wavefronts per instruction, ~1300 per
+// K-iteration against ~250 for the weights themselves. That LSU traffic, not GDDR, capped the
+// PTQ1 GEMV near 370 GB/s on Ada. Here K-blocks are grouped by 32 and word w of the group is
+// stored contiguously, so the same load is 32 consecutive words = 1 wavefront.
+// Bytes per column are unchanged when K is padded to a multiple of 32*128 = 4096.
+#define GGML_CUDA_PTQ1_Q8_GROUP_KB     32
+#define GGML_CUDA_PTQ1_Q8_WORDS_PER_KB 36
+#define GGML_CUDA_PTQ1_Q8_GROUP_WORDS  (GGML_CUDA_PTQ1_Q8_GROUP_KB * GGML_CUDA_PTQ1_Q8_WORDS_PER_KB)
+#define GGML_CUDA_PTQ1_K_PAD           (GGML_CUDA_PTQ1_Q8_GROUP_KB * QK_PTQ1_0)
+
+// Word offset (within one activation column) of word w (0..7 = qs words, 8 = ds) of block_q8_1 ib.
+static constexpr __host__ __device__ int ggml_cuda_ptq1_q8_word(int ib, int w) {
+    const int kb   = ib >> 2;
+    const int sub  = ib & 3;
+    const int g    = kb >> 5;
+    const int lane = kb & 31;
+    const int ww   = w < 8 ? sub * 8 + w : 32 + sub;
+    return g * GGML_CUDA_PTQ1_Q8_GROUP_WORDS + ww * GGML_CUDA_PTQ1_Q8_GROUP_KB + lane;
+}
+
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;
@@ -1251,6 +1322,21 @@ const ggml_cuda_device_info & ggml_cuda_info();
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
 
+// The producer and MMVQ consumer must agree on the packed q8_1 layout.
+static inline ggml_cuda_q8_1_layout ggml_cuda_q8_1_layout_host(ggml_type type_src0, int ncols_dst, bool has_ids) {
+    const ggml_cuda_q8_1_layout layout = ggml_cuda_q8_1_layout_for(type_src0, ncols_dst, has_ids);
+    if (layout == GGML_CUDA_Q8_1_SOA_ISUM && ggml_cuda_batch_invariant()) {
+        return GGML_CUDA_Q8_1_PT;
+    }
+    if (layout == GGML_CUDA_Q8_1_SOA_ISUM) {
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE && cc < GGML_CUDA_CC_ADA_LOVELACE) {
+            return GGML_CUDA_Q8_1_PT;
+        }
+    }
+    return layout;
+}
+
 // raw device allocation, honors GGML_CUDA_ENABLE_UNIFIED_MEMORY. free with cudaFree
 cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device);
 
@@ -1341,6 +1427,7 @@ struct ggml_cuda_graph {
         void *   node_src_data_ptrs[GGML_MAX_SRC];
         int64_t  node_src_ne[GGML_MAX_SRC][GGML_MAX_DIMS];
         size_t   node_src_nb[GGML_MAX_SRC][GGML_MAX_DIMS];
+        uint64_t kv_stream_generation;
     };
     std::vector<node_properties> node_props;
 
@@ -1502,6 +1589,79 @@ struct ggml_cuda_stream_context {
     }
 };
 
+// Fused recurrent-state gather for GATED_DELTA_NET. build_rs materialises GET_ROWS(cache, s_copy)
+// into a temp per layer that only the GDN kernel reads; when the graph evaluator can prove that, it
+// skips the GET_ROWS and records the gather here so the kernel reads cache row ids[seq] directly.
+struct ggml_cuda_gated_delta_net_gather {
+    const float *   base       = nullptr; // cache rows [row_stride floats each]
+    const int32_t * ids        = nullptr; // per-seq row index
+    int64_t         row_stride = 0;       // in floats
+};
+
+// Owned by the backend context that evaluates the graph: registrations are keyed by node pointer,
+// so they are only meaningful for the evaluation that made them. Reset at the start of every
+// graph evaluation/capture; never shared between contexts or threads.
+struct ggml_cuda_gdn_gather_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_gated_delta_net_gather> gathers;
+
+    void reset() {
+        gathers.clear();
+    }
+
+    void set(const ggml_tensor * gdn, const ggml_cuda_gated_delta_net_gather & gather) {
+        gathers[gdn] = gather;
+    }
+
+    const ggml_cuda_gated_delta_net_gather * find(const ggml_tensor * gdn) const {
+        const auto it = gathers.find(gdn);
+        return it == gathers.end() ? nullptr : &it->second;
+    }
+};
+
+// A Hadamard transform (MUL_MAT with GGML_HINT_SRC0_IS_HADAMARD, optionally preceded by the sign
+// flip) whose only consumers are PTQ1_0 mat-vecs writes the q8_1-quantized activation into its own
+// output buffer instead of the F32 result (the quantized rows are 9/8 bytes per element, so they
+// fit in the F32 allocation), and the mat-vecs skip their quantize launch. The output buffer's
+// lifetime is exactly the consumers' lifetime, so nothing about allocation changes. Keyed by tensor
+// identity (the transform output and every reshape view of it that a mat-vec consumes), never by
+// data pointer: ggml-alloc recycles a dead output's block for later tensors in the same graph, and a
+// later PTQ1_0 mat-vec whose src1 landed there must not mistake its F32 rows for q8_1. Valid for one
+// graph evaluation.
+struct ggml_cuda_fwht_q8 {
+    ggml_cuda_q8_1_layout layout = GGML_CUDA_Q8_1_AOS;
+    int64_t               ne0    = 0;       // padded row width the quantizer wrote (what the mat-vec expects)
+    int64_t               ncols  = 0;       // rows quantized (src1->ne[1] of every consumer)
+    const void *          data   = nullptr; // the q8_1 rows: the transform's own output buffer, or a pool block
+                                            // held for the rest of the graph when that buffer aliases the input
+};
+
+struct ggml_cuda_fwht_q8_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_fwht_q8> entries;
+    std::vector<std::unique_ptr<ggml_cuda_pool_alloc<char>>> held; // released at reset(), newest first (VMM pool is LIFO)
+
+    // the implicit destructor would release `held` oldest first, which the VMM pool asserts on. The
+    // owning context also calls reset() before its pools go away (this member is declared before them).
+    ~ggml_cuda_fwht_q8_context() {
+        reset();
+    }
+
+    void reset() {
+        entries.clear();
+        while (!held.empty()) {
+            held.pop_back();
+        }
+    }
+
+    void set(const ggml_tensor * out, const ggml_cuda_fwht_q8 & e) {
+        entries[out] = e;
+    }
+
+    const ggml_cuda_fwht_q8 * find(const ggml_tensor * out) const {
+        const auto it = entries.find(out);
+        return it == entries.end() ? nullptr : &it->second;
+    }
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
@@ -1513,14 +1673,6 @@ struct ggml_backend_cuda_context {
     size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {0};
 
     int curr_stream_no = 0;
-
-    // [TAG_FA_F16_CUDA_GRAPHS] Set once per compute call in ggml_backend_cuda_graph_compute: true
-    // when the current cgraph is graph-enabled AND graph-compatible (i.e. it will be captured).
-    // On HIP the flash-attention launcher reads this to place its f16 KV-dequant temp buffers in the
-    // capture-safe memory pool instead of raw cudaMalloc/cudaFree, which are illegal while a CUDA
-    // graph is being captured. Left false for graph-incompatible graphs so those keep the raw
-    // release-after-use path (avoids the legacy pool retaining the temp; ref llama.cpp #22107).
-    bool fa_f16_use_pool = false;
 
     // Per-graph-eval shared-quantize cache for the mmvq path. Several matvecs in one decode
     // layer consume the same normed activation (Q/V/K read attn_norm; the router, fused
@@ -1562,6 +1714,24 @@ struct ggml_backend_cuda_context {
         std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
     } tq_rot_cache;
 
+    // Per-expert address tables for the MoE weight indirection (see tq_build_expert_table). One
+    // entry per expert tensor, built on first use and kept for the life of the context: a captured
+    // graph replays kernels that read this exact address, so it cannot be pool memory and cannot be
+    // freed early. Same discipline as the caches above.
+    struct moe_expert_table {
+        const void *  base      = nullptr;   // src0->data the table was built from
+        int64_t       nb_expert = 0;
+        int           n_expert  = 0;
+        int           dev       = -1;
+        const void ** ptr       = nullptr;   // device array of n_expert addresses
+    };
+    std::vector<moe_expert_table> moe_tables;
+    std::vector<retired_buf>      moe_tables_retired;
+
+    // The cached table for this expert tensor, built on first use. Stable across calls so a
+    // captured graph can keep referencing it.
+    const void ** moe_expert_table_get(const ggml_tensor * src0, int64_t nb_expert, cudaStream_t stream);
+
     uint64_t graph_epoch = 1;
 
     // Fusion hit counters. Read through ggml_backend_cuda_fusion_count(); test-backend-ops uses
@@ -1571,7 +1741,33 @@ struct ggml_backend_cuda_context {
         int64_t q8_cache_hits = 0;   // mmvq shared-quantize cache hits
         int64_t fused_add     = 0;   // tuned multi-ADD runs (ggml_cuda_op_fused_add)
         int64_t fused_mul     = 0;   // tuned multi-MUL runs (ggml_cuda_op_fused_mul)
+        int64_t mul_mat_bias  = 0;   // ADD epilogues folded into mul_mat_vec (bias or a full
+                                     // same-shape residual: both arrive as fusion x_bias)
+        int64_t mul_mat_glu   = 0;   // GLU epilogues folded into mul_mat_vec
     } fusion_stats;
+    // Landing slots for paged-in experts. One slab per expert tensor, n_slots experts wide; the
+    // address table is pointed at a slot instead of at the expert's home address once it is copied.
+    struct moe_expert_slab {
+        const void * base = nullptr;
+        int64_t      nb_expert = 0;
+        int          n_slots = 0;
+        int          n_expert = 0;
+        int          n_routed = 0;
+        int          dev = -1;
+        void *       slab = nullptr;
+        // residency bookkeeping, all device-resident so the policy stays inside the graph
+        int32_t *    slot_expert = nullptr;   // n_slots,  expert in this slot or -1
+        int32_t *    claim       = nullptr;   // n_slots,  lowest routed index claiming it this call
+        int32_t *    hit         = nullptr;   // n_routed, already resident
+        int32_t *    won         = nullptr;   // n_routed, will read from a slot rather than in place
+        int32_t *    miss_expert = nullptr;   // n_routed
+        int32_t *    miss_slot   = nullptr;   // n_routed
+        int32_t *    n_miss      = nullptr;   // 1
+    };
+    std::vector<moe_expert_slab> moe_slabs;
+
+    moe_expert_slab * moe_expert_slab_get(const ggml_tensor * src0, int64_t nb_expert,
+                                          int n_expert, int n_routed, cudaStream_t stream);
 
 #ifdef USE_CUDA_GRAPH
     std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
@@ -1640,6 +1836,8 @@ struct ggml_backend_cuda_context {
     }
 
     ggml_cuda_stream_context concurrent_stream_context;
+    ggml_cuda_gdn_gather_context gdn_gather_context;
+    ggml_cuda_fwht_q8_context    fwht_q8_context;
 
     ~ggml_backend_cuda_context();
 
@@ -1654,6 +1852,10 @@ struct ggml_backend_cuda_context {
     cudaStream_t stream() { return stream(device, curr_stream_no); }
 
     ggml_cuda_stream_context & stream_context() { return concurrent_stream_context; }
+
+    ggml_cuda_gdn_gather_context & gdn_gathers() { return gdn_gather_context; }
+
+    ggml_cuda_fwht_q8_context & fwht_q8() { return fwht_q8_context; }
 
     cublasHandle_t cublas_handle() {
         if (cublas_handles[device][curr_stream_no] == nullptr) {
@@ -1698,6 +1900,9 @@ struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * gate_scale = nullptr;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
+    const ggml_tensor * shared_up = nullptr;
+    const ggml_tensor * shared_gate = nullptr;
+    ggml_tensor * shared_dst = nullptr;
 };
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
@@ -1707,6 +1912,10 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * gate_scale = nullptr;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
+    const void * shared_up = nullptr;
+    const void * shared_gate = nullptr;
+    float * shared_dst = nullptr;
+    uint32_t shared_stride_col_dst = 0;
 };
 
 struct ggml_cuda_kernel_launch_params {
@@ -1807,11 +2016,11 @@ static bool ggml_cuda_kernel_can_use_pdl(const void * kernel) {
 #endif //defined(GGML_CUDA_USE_PDL)
 
 // PDL and __restrict__ need to be mutually exclusive, see https://github.com/ggml-org/llama.cpp/pull/24030
-# if (defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER)
+# if (defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER)
 # define GGML_CUDA_RESTRICT
 # else
 # define GGML_CUDA_RESTRICT __restrict__
-# endif // defined(GGML_CUDA_USE_PDL) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
+# endif // defined(GGML_CUDA_USE_PDL) && __CUDA_ARCH__ >= GGML_CUDA_CC_HOPPER
 
 template<typename Kernel, typename... Args>
 static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_kernel_launch_params & launch_params, Args&&... args) {

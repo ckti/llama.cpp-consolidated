@@ -93,6 +93,29 @@ cmake --build build --config Release
   - **Fedora / RHEL / Rocky / Alma:** `sudo dnf install openssl-devel`
   - **Arch / Manjaro:** `sudo pacman -S openssl`
 
+### x86 CPU instruction sets
+
+To build for x86-64 CPUs with SSSE3 and no AVX requirement, use a fresh build directory:
+
+```bash
+cmake -B build-ssse3 -DGGML_NATIVE=OFF -DGGML_SSSE3=ON \
+    -DGGML_SSE42=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF \
+    -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF
+cmake --build build-ssse3 --config Release -j 8
+```
+
+SSSE3 is a separate extension from SSE3. Set `GGML_SSSE3=OFF` in this configuration for the x86-64 SSE2 baseline. Avoid `-march=native` in custom compiler flags when targeting older CPUs.
+
+For automatic selection at startup, build the CPU variants as shared backends:
+
+```bash
+cmake -B build-auto -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
+    -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
+cmake --build build-auto --config Release -j 8
+```
+
+On x86-64, this includes SSE2, SSSE3, SSE4.2, and AVX-family variants. Keep the backend libraries with the executable when distributing the build; the loader selects the highest-ranked variant supported by the CPU.
+
 ## BLAS Build
 
 Building the program with BLAS support may lead to some performance improvements in prompt processing using batch sizes higher than 32 (the default is 512). Using BLAS doesn't affect the generation performance. There are currently several different BLAS implementations available for build and use:
@@ -115,6 +138,20 @@ This provides BLAS acceleration using only the CPU. Make sure to have OpenBLAS i
 ### BLIS
 
 Check [BLIS.md](./backend/BLIS.md) for more information.
+
+### AMD AOCL-BLAS
+
+For AMD CPU inference, the [ZenDNN backend](#zendnn) is recommended. AOCL-BLAS is also available as a vendor option for the generic `GGML_BLAS` backend.
+
+Source `amd-libs.cfg` from your AOCL install (MT tree by default), then build (CMake 3.27+ recommended for the `AOCL` / `AOCL_mt` vendors):
+
+```bash
+source /opt/aocl/<version>/aocc/MT/amd-libs.cfg   # adjust path; ST tree uses .../ST/amd-libs.cfg
+cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=AOCL_mt -DBLAS_INCLUDE_DIRS="${AOCL_ROOT}/include" -DGGML_NATIVE=ON
+cmake --build build --config Release
+```
+
+Full steps, threading notes, and a fallback for older CMake: [AOCL.md](./backend/AOCL.md).
 
 ### Intel oneMKL
 
@@ -180,6 +217,16 @@ Make sure to read the notes about the CPU build for general instructions for e.g
 cmake -B build -DGGML_CUDA=ON
 cmake --build build --config Release
 ```
+
+To use a specific CCCL version instead of the one bundled with the installed CUDA Toolkit, add `-DGGML_CUDA_CCCL_VERSION=vMAJOR.MINOR.PATCH`. CUB DeviceTopK requires CCCL 3.4.3 or newer; older versions use the sort fallback.
+
+Note that this also builds the CPU backend by default. On Windows on ARM, MSVC's
+support for the ARM NEON intrinsics used by the CPU backend may be incomplete, so
+a CUDA build produced entirely with MSVC might have a slower CPU backend. If CPU
+performance matters, try following the split build used in our release workflow
+([.github/workflows/release.yml](../.github/workflows/release.yml)): the CPU backend
+is built with clang (`cmake/arm64-windows-llvm.cmake`) and the CUDA backend with MSVC
+(`cmake/arm64-windows-msvc-cuda.cmake`), and the artifacts are merged afterwards.
 
 ### Non-Native Builds
 
@@ -282,6 +329,13 @@ Consider setting `CUDA_SCALE_LAUNCH_QUEUES=4x`, which increases the CUDA command
 Override default, speed-optimized compute types for cuBLAS matrix multiplications.
 Legal values: `auto`, `f16`, `fp16`, `bf16`, `f32`, `fp32`.
 
+#### GGML_CUDA_MMQ_PREC
+
+Override the activation precision that the model requests for NVFP4 and MXFP4 matrix multiplications.
+Currently supported values: `auto`, `q8`, `q4`.
+
+NVFP4 and MXFP4 layers marked as W4A16 request 8-bit activations, so on Blackwell those layers run through the W4A8 path instead of the native W4A4 path. Set `q4` to keep the native W4A4 path for faster prompt processing at the cost of accuracy, or `q8` to use the W4A8 path for every layer, `auto` uses per-tensor prec metadata (this is the same behavior as when the environment variable is not set).
+
 ### Unified Memory
 
 The environment variable `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` can be used to enable unified memory in Linux. This allows swapping to system RAM instead of crashing when the GPU VRAM is exhausted. In Windows this setting is available in the NVIDIA control panel as `System Memory Fallback`.
@@ -323,11 +377,11 @@ cmake --build build --config Release
 By default, all supported compute capabilities are enabled. To customize this behavior, you can specify the `MUSA_ARCHITECTURES` option in the CMake command:
 
 ```bash
-cmake -B build -DGGML_MUSA=ON -DMUSA_ARCHITECTURES="21"
+cmake -B build -DGGML_MUSA=ON -DMUSA_ARCHITECTURES="31"
 cmake --build build --config Release
 ```
 
-This configuration enables only compute capability `2.1` (MTT S80) during compilation, which can help reduce compilation time.
+This configuration enables only compute capability `3.1` (MTT S5000) during compilation, which can help reduce compilation time.
 
 #### Compilation options
 

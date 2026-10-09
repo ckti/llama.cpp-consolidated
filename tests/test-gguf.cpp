@@ -40,6 +40,7 @@ enum handcrafted_file_type {
     HANDCRAFTED_TENSORS_ZERO_DIM           =  35 + offset_has_tensors,
     HANDCRAFTED_TENSORS_NE_TOO_BIG         =  40 + offset_has_tensors,
     HANDCRAFTED_TENSORS_NBYTES_TOO_BIG     =  45 + offset_has_tensors,
+    HANDCRAFTED_TENSORS_NBYTES_PAD_WRAP    =  46 + offset_has_tensors,
     HANDCRAFTED_TENSORS_BAD_TYPE           =  50 + offset_has_tensors,
     HANDCRAFTED_TENSORS_BAD_OFFSET         =  60 + offset_has_tensors,
     HANDCRAFTED_TENSORS_DUPLICATE_NAME     =  70 + offset_has_tensors,
@@ -80,6 +81,7 @@ static std::string handcrafted_file_type_name(const enum handcrafted_file_type h
         case HANDCRAFTED_TENSORS_ZERO_DIM:           return "TENSORS_ZERO_DIM";
         case HANDCRAFTED_TENSORS_NE_TOO_BIG:         return "TENSORS_NE_TOO_BIG";
         case HANDCRAFTED_TENSORS_NBYTES_TOO_BIG:     return "TENSORS_NBYTES_TOO_BIG";
+        case HANDCRAFTED_TENSORS_NBYTES_PAD_WRAP:    return "TENSORS_NBYTES_PAD_WRAP";
         case HANDCRAFTED_TENSORS_BAD_TYPE:           return "TENSORS_BAD_TYPE";
         case HANDCRAFTED_TENSORS_BAD_OFFSET:         return "TENSORS_BAD_OFFSET";
         case HANDCRAFTED_TENSORS_DUPLICATE_NAME:     return "TENSORS_DUPLICATE_NAME";
@@ -192,6 +194,86 @@ struct callback_reader_data {
     size_t size;
 };
 
+static std::pair<int, int> test_prism_q2_layout() {
+    struct layout_case {
+        const char * name;
+        ggml_type stored_type;
+        int64_t width;
+        uint64_t data_size;
+        uint64_t norm_offset;
+        uint64_t tail_offset;
+        ggml_type expected_type;
+        bool truncated = false;
+    };
+    const layout_case cases[] = {
+        { "native Q2_0",        GGML_TYPE_Q2_0,  1024, 576, 576, 608, GGML_TYPE_Q2_0  },
+        { "legacy Prism Q2_0",  GGML_TYPE_Q2_0,  1024, 544, 544, 576, GGML_TYPE_PQ2_0 },
+        { "explicit PQ2_0",     GGML_TYPE_PQ2_0, 1024, 544, 544, 576, GGML_TYPE_PQ2_0 },
+        { "explicit PTQ1_0",    GGML_TYPE_PTQ1_0,1024, 448, 448, 480, GGML_TYPE_PTQ1_0 },
+        { "64-wide Q2_0",       GGML_TYPE_Q2_0,    64,  64,  64,  96, GGML_TYPE_Q2_0  },
+        { "ambiguous padding", GGML_TYPE_Q2_0,   128,  96,  96, 128, GGML_TYPE_Q2_0  },
+        { "bad later offset",  GGML_TYPE_Q2_0,  1024, 544, 544, 608, GGML_TYPE_COUNT },
+        { "bad legacy width",  GGML_TYPE_Q2_0,    64,  32,  32,  64, GGML_TYPE_COUNT },
+        { "bad native offset", GGML_TYPE_Q2_0,  1024, 576, 576, 640, GGML_TYPE_COUNT },
+        { "truncated legacy",  GGML_TYPE_Q2_0,  1024, 544, 544, 576, GGML_TYPE_PQ2_0, true },
+    };
+
+    int npass = 0;
+    int ntest = 0;
+    for (const auto & c : cases) {
+        FILE * file = tmpfile();
+        GGML_ASSERT(file != nullptr);
+        helper_write(file, GGUF_MAGIC, 4);
+        helper_write(file, uint32_t(GGUF_VERSION));
+        helper_write(file, uint64_t(3));
+        helper_write(file, uint64_t(0));
+
+        const char * names[] = { "weight", "norm", "tail" };
+        const uint64_t offsets[] = { 0, c.norm_offset, c.tail_offset };
+        for (int i = 0; i < 3; ++i) {
+            const std::string name = names[i];
+            helper_write(file, uint64_t(name.size()));
+            helper_write(file, name.data(), name.size());
+            helper_write(file, uint32_t(i == 0 ? 2 : 1));
+            helper_write(file, int64_t(i == 0 ? c.width : i == 1 ? 2 : 1));
+            if (i == 0) {
+                helper_write(file, int64_t(2));
+            }
+            helper_write(file, i == 0 ? c.stored_type : GGML_TYPE_F32);
+            helper_write(file, offsets[i]);
+        }
+        const size_t header_size = ftell(file);
+        const size_t padding = GGML_PAD(header_size, GGUF_DEFAULT_ALIGNMENT) - header_size;
+        const std::vector<uint8_t> data(padding + c.data_size + (c.truncated ? 0 : 64), 0);
+        helper_write(file, data.data(), data.size());
+        const auto bytes = read_file_to_buffer(file);
+        fclose(file);
+
+        for (bool no_alloc : { true, false }) {
+            ggml_context * ctx = nullptr;
+            const gguf_init_params params = { no_alloc, &ctx };
+            gguf_context * gguf = gguf_init_from_buffer(bytes.data(), bytes.size(), params);
+            const bool expected = c.expected_type != GGML_TYPE_COUNT && (no_alloc || !c.truncated);
+            bool ok = (gguf != nullptr) == expected;
+            if (gguf && expected) {
+                const ggml_tensor * weight = ggml_get_tensor(ctx, "weight");
+                ok = ok && gguf_get_tensor_type(gguf, 0) == c.expected_type;
+                ok = ok && weight && weight->type == c.expected_type;
+                if (weight) {
+                    const size_t row_size = ggml_row_size(c.expected_type, c.width);
+                    ok = ok && weight->nb[1] == row_size && ggml_nbytes(weight) == 2 * row_size;
+                }
+            }
+            gguf_free(gguf);
+            ggml_free(ctx);
+            ++ntest;
+            npass += ok;
+            printf("Prism layout %s (no_alloc=%d): %s\n", c.name, no_alloc, ok ? "OK" : "FAIL");
+        }
+    }
+    return { npass, ntest };
+}
+
 static size_t read_buffer_callback(void * userdata, void * output, uint64_t offset, size_t len) {
     GGML_ASSERT(len > 0);
 
@@ -248,6 +330,13 @@ static FILE * get_handcrafted_file(const unsigned int seed, const enum handcraft
 
         tensor_configs[0] = { GGML_TYPE_I8, { 0x7FFFFFFFFFFFFFC0, 1, 1, 1 } };
         tensor_configs[1] = { GGML_TYPE_I8, { 0x7FFFFFFFFFFFFFC0, 1, 1, 1 } };
+    }
+
+    if (hft == HANDCRAFTED_TENSORS_NBYTES_PAD_WRAP) {
+        tensor_configs.resize(1);
+        // F32 with ne = [4, 2^30-1, 2^30+1, 1] so ggml_nbytes = 2^64 - 16.
+        // this hits the GGML_PAD wrap window: pad wraps to 0.
+        tensor_configs[0] = { GGML_TYPE_F32, { 4, INT64_C(1073741823), INT64_C(1073741825), 1 } };
     }
 
     if (hft == HANDCRAFTED_HEADER_BAD_N_TENSORS) {
@@ -774,6 +863,7 @@ static std::pair<int, int> test_handcrafted_file(const unsigned int seed) {
         HANDCRAFTED_TENSORS_ZERO_DIM,
         HANDCRAFTED_TENSORS_NE_TOO_BIG,
         HANDCRAFTED_TENSORS_NBYTES_TOO_BIG,
+        HANDCRAFTED_TENSORS_NBYTES_PAD_WRAP,
         HANDCRAFTED_TENSORS_BAD_TYPE,
         HANDCRAFTED_TENSORS_BAD_OFFSET,
         HANDCRAFTED_TENSORS_DUPLICATE_NAME,
@@ -1167,15 +1257,17 @@ static bool same_tensor_data(const struct ggml_context * orig, const struct ggml
 
 enum roundtrip_read_mode {
     ROUNDTRIP_READ_MODE_FILE,
+    ROUNDTRIP_READ_MODE_FILE_OFFSET, // GGUF embedded after some bytes of a bigger file
     ROUNDTRIP_READ_MODE_BUFFER,
     ROUNDTRIP_READ_MODE_CALLBACK,
 };
 
 static const char * roundtrip_read_mode_name(const roundtrip_read_mode mode) {
     switch (mode) {
-        case ROUNDTRIP_READ_MODE_FILE:     return "file";
-        case ROUNDTRIP_READ_MODE_BUFFER:   return "buffer";
-        case ROUNDTRIP_READ_MODE_CALLBACK: return "callback";
+        case ROUNDTRIP_READ_MODE_FILE:        return "file";
+        case ROUNDTRIP_READ_MODE_FILE_OFFSET: return "file_offset";
+        case ROUNDTRIP_READ_MODE_BUFFER:      return "buffer";
+        case ROUNDTRIP_READ_MODE_CALLBACK:    return "callback";
     }
 
     GGML_ABORT("fatal error");
@@ -1214,6 +1306,12 @@ static std::pair<int, int> test_roundtrip(
     GGML_ASSERT(file);
 #endif // _WIN32
 
+    // not a multiple of any alignment, so the data section padding must be relative to the GGUF start
+    const long prefix = read_mode == ROUNDTRIP_READ_MODE_FILE_OFFSET ? 7 : 0;
+    for (long i = 0; i < prefix; ++i) {
+        fputc(0xAB, file);
+    }
+
     gguf_write_to_file_ptr(gguf_ctx_0, file, only_meta);
     rewind(file);
 
@@ -1236,6 +1334,7 @@ static std::pair<int, int> test_roundtrip(
         };
         gguf_ctx_1 = gguf_init_from_callback(read_buffer_callback, &reader, 4096, 4ull << 30 /* 4GB */, gguf_params);
     } else {
+        GGML_ASSERT(fseek(file, prefix, SEEK_SET) == 0);
         gguf_ctx_1 = gguf_init_from_file_ptr(file, gguf_params);
     }
 
@@ -1438,6 +1537,11 @@ int main(int argc, char ** argv) {
     int npass = 0;
     int ntest = 0;
     {
+        const auto result = test_prism_q2_layout();
+        npass += result.first;
+        ntest += result.second;
+    }
+    {
         std::pair<int, int> result = test_handcrafted_file(seed);
         npass += result.first;
         ntest += result.second;
@@ -1448,6 +1552,11 @@ int main(int argc, char ** argv) {
 
         for (bool only_meta : {true, false}) {
             std::pair<int, int> result = test_roundtrip(dev, seed, only_meta, ROUNDTRIP_READ_MODE_FILE);
+            npass += result.first;
+            ntest += result.second;
+        }
+        {
+            std::pair<int, int> result = test_roundtrip(dev, seed, /*only_meta=*/false, ROUNDTRIP_READ_MODE_FILE_OFFSET);
             npass += result.first;
             ntest += result.second;
         }
