@@ -2461,6 +2461,12 @@ template <int DKQ, int DV, int ncols2, ggml_type type_KV = GGML_TYPE_F16>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * V = dst->src[2];
+
+    if (turing_mma_available(cc) && ggml_is_quantized(V->type) && Q->ne[1] > 2 && Q->ne[1] <= 4) {
+        ggml_cuda_flash_attn_ext_mma_f16_case<DKQ, DV, 64/ncols2, ncols2>(ctx, dst);
+        return;
+    }
 
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if constexpr (ggml_cuda_flash_attn_ext_mma_f16_may_use_sparse(DKQ, DV, 1, ncols2)) {
@@ -2943,7 +2949,7 @@ static fattn_vec_case_t ggml_cuda_get_fattn_vec_case(const int64_t head_size, co
             ggml_cuda_flash_attn_ext_vec_case_d512<type_K, type_V>(ctx, dst);                                       \
             return;                                                                                                  \
         }                                                                                                            \
-    }                                                                                                                \
+    }
 
 static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q = dst->src[0];
