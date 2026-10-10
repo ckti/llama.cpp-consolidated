@@ -2403,7 +2403,7 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float to
 
     // token embeddings with lora and padding
     auto build_tok = [&](ggml_tensor * ids) {
-        ggml_tensor * cur = ggml_get_rows(ctx0, tok_embd, ids);
+        ggml_tensor * cur = build_embd_rows(tok_embd, ids);
 
         // apply lora for embedding tokens if needed
         for (const auto & lora : *loras) {
