@@ -1022,6 +1022,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_PQ2_0> {
     static constexpr int qk = QK_PQ2_0;
     static constexpr int qr = QR_PQ2_0;
     static constexpr int qi = QI_PQ2_0;
+    static constexpr int bs = sizeof(block_pq2_0);
 };
 
 // PTQ1_0 packs trits base-3, five per byte, so element order is not positional. It
